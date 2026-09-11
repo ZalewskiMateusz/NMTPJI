@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+
+# Local SQLite database & saved user data
+saved_decks/
+*.db
+
+# IDE configuration
+.idea/
+.vscode/
