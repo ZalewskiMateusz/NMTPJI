@@ -40,12 +40,11 @@ class MenuView(ctk.CTkFrame):
         )
         self.deck_editor_button.pack(pady=10, padx=20)
 
-    # Reakcje na nawigację w GUI (zarządza nimi widok/okno)
     def create_new_room_action(self):
-        print("Click: New Room")
+        self.master.show_deck_selection(mode="room")
 
     def join_room_action(self):
         print("Click: Join Room")
 
     def deck_editor_action(self):
-        print("Click: DECKS")
+        self.master.show_deck_selection(mode="editor")
