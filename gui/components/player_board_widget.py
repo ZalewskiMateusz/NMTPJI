@@ -1,205 +1,361 @@
-import os
 import customtkinter as ctk
 
-FONT_PATH = os.path.join("assets", "fonts", "Kanisah.ttf")
-if os.path.exists(FONT_PATH):
-    ctk.FontManager.load_font(FONT_PATH)
+FONT_HEADER = "Georgia"
+FONT_UI = "Segoe UI"
+DEFAULT_MAX_HP = 40
 
 
 class PlayerBoardWidget(ctk.CTkFrame):
-    def __init__(self, master, player_name: str = "Player", opponents: list = None):
-        super().__init__(master)
+    def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, **kwargs):
+        self.border_inactive = "#2a2a2a"
+        self.border_active = "#00FF66"
 
+        super().__init__(
+            parent,
+            fg_color="#121212",
+            border_width=1,
+            border_color=self.border_inactive,
+            corner_radius=12,
+            **kwargs,
+        )
+
+        self.player_id = player_id
         self.player_name = player_name
-        self.opponents = opponents or ["Opponent 1", "Opponent 2", "Opponent 3"]
+        self.engine = engine
 
         self.is_stats_visible = False
         self.is_cmdr_visible = False
 
-        self.state = {
-            "hp": 40,
-            "poison": 0,
-            "cmdr_tax": 0,
-            "cmdr_damage": {opp: 0 for opp in self.opponents}
-        }
+        self.cmdr_dmg_labels = {}
 
-        self.configure(fg_color="#1a1a1a", corner_radius=10, border_width=1, border_color="#333333")
+        # --- MAIN BOARD ---
+        self.main_board = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_board.pack(fill="both", expand=True, padx=6, pady=6)
 
-        # UKŁAD: Wiersz 0 (Górny pasek), Wiersz 1 (Stół / Widok gry)
-        self.grid_rowconfigure(0, weight=0)
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        # --- TOP BAR ---
+        self.top_bar = ctk.CTkFrame(self.main_board, fg_color="#1a1a1a", corner_radius=8)
+        self.top_bar.pack(fill="x", side="top", pady=(0, 5), ipady=4)
 
-        # =====================================================================
-        # 1. GÓRNA BELKA (Kompaktowa)
-        # =====================================================================
-        self.top_bar = ctk.CTkFrame(self, fg_color="#222222", corner_radius=6)
-        self.top_bar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
-
-        # Przyciski zbite z lewej strony
-        self.toggle_stats_btn = ctk.CTkButton(
-            self.top_bar, text="📊 Stats", width=60, height=24,
-            font=("Kanisah", 10, "bold"), fg_color="#333333", hover_color="#444444",
-            command=self.toggle_stats_panel
+        # Nick
+        self.lbl_name = ctk.CTkLabel(
+            self.top_bar,
+            text=self.player_name,
+            font=(FONT_UI, 15, "bold"),
+            text_color="#FFFFFF",
+            anchor="w",
         )
-        self.toggle_stats_btn.pack(side="left", padx=6, pady=5)
+        self.lbl_name.pack(side="left", padx=(10, 5))
 
-        self.name_lbl = ctk.CTkLabel(
-            self.top_bar, text=self.player_name, font=("Kanisah", 14, "bold")
+        # Status
+        self.lbl_status = ctk.CTkLabel(
+            self.top_bar,
+            text="WAITING",
+            font=(FONT_UI, 11, "bold"),
+            text_color="#666666",
         )
-        self.name_lbl.pack(side="left", padx=6)
+        self.lbl_status.pack(side="right", padx=(0, 10))
 
-        # --- SEKCJA HP & DROPDOWN CMDR DAMAGE ---
-        self.hp_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
-        self.hp_container.pack(side="left", padx=10)
+        # Środek nagłówka: TAX | - | HP | + | ⚔ | PSN
+        self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        self.center_stats_container.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.hp_row = ctk.CTkFrame(self.hp_container, fg_color="transparent")
-        self.hp_row.pack(side="top")
-
-        self.sub_hp_btn = ctk.CTkButton(
-            self.hp_row, text="-", width=22, height=22,
-            font=("Kanisah", 12, "bold"), fg_color="#8b0000", hover_color="#a10000",
-            command=lambda: self.adjust_hp(-1)
+        # Tax
+        self.btn_tax = ctk.CTkButton(
+            self.center_stats_container,
+            text="TAX: 0",
+            font=(FONT_UI, 11, "bold"),
+            width=52,
+            height=26,
+            fg_color="#252525",
+            hover_color="#333333",
         )
-        self.sub_hp_btn.pack(side="left", padx=1)
+        self.btn_tax.pack(side="left", padx=(0, 6))
+        self.btn_tax.bind("<Button-1>", lambda e: self.change_tax(2))
+        self.btn_tax.bind("<Button-3>", lambda e: self.change_tax(-2))
 
-        self.hp_lbl = ctk.CTkLabel(
-            self.hp_row, text="40", width=36, height=24,
-            font=("Kanisah", 16, "bold"), fg_color="#2b2b2b", corner_radius=4
+        # HP Minus
+        self.btn_minus_hp = ctk.CTkButton(
+            self.center_stats_container,
+            text="−",
+            font=(FONT_UI, 16, "bold"),
+            width=28,
+            height=28,
+            fg_color="#2a2a2a",
+            hover_color="#3a3a3a",
+            command=lambda: self.change_hp(-1),
         )
-        self.hp_lbl.pack(side="left", padx=2)
+        self.btn_minus_hp.pack(side="left", padx=2)
 
-        self.add_hp_btn = ctk.CTkButton(
-            self.hp_row, text="+", width=22, height=22,
-            font=("Kanisah", 12, "bold"), fg_color="#1b5e20", hover_color="#2e7d32",
-            command=lambda: self.adjust_hp(1)
+        # HP Label
+        self.lbl_hp = ctk.CTkLabel(
+            self.center_stats_container,
+            text=str(DEFAULT_MAX_HP),
+            font=(FONT_HEADER, 22, "bold"),
+            text_color="#00FF66",
+            width=50,
         )
-        self.add_hp_btn.pack(side="left", padx=1)
+        self.lbl_hp.pack(side="left", padx=2)
 
-        self.toggle_cmdr_btn = ctk.CTkButton(
-            self.hp_container, text="⚔️", width=36, height=16,
-            font=("Kanisah", 10), fg_color="#3a2323", hover_color="#522b2b",
-            command=self.toggle_cmdr_panel
+        # HP Plus
+        self.btn_plus_hp = ctk.CTkButton(
+            self.center_stats_container,
+            text="+",
+            font=(FONT_UI, 16, "bold"),
+            width=28,
+            height=28,
+            fg_color="#2a2a2a",
+            hover_color="#3a3a3a",
+            command=lambda: self.change_hp(1),
         )
-        self.toggle_cmdr_btn.pack(side="top", pady=(2, 0))
+        self.btn_plus_hp.pack(side="left", padx=2)
 
-        # Prawostronne liczniki (Poison / Tax)
-        self.tax_lbl = self._create_top_counter(self.top_bar, "Tax:", "cmdr_tax", "#d4af37", step=2)
-        self.poison_lbl = self._create_top_counter(self.top_bar, "Poison:", "poison", "#2e7d32")
-
-        # =====================================================================
-        # 2. GŁÓWNY STÓŁ GRACZA (Main Board Area)
-        # =====================================================================
-        self.main_board = ctk.CTkFrame(self, fg_color="#141414", corner_radius=6)
-        self.main_board.grid(row=1, column=0, sticky="nsew", padx=8, pady=(2, 8))
-
-        # --- NAKŁADKA STATS (Półprzezroczysty Flyout Panel) ---
-        self.stats_panel = ctk.CTkFrame(
-            self.main_board, fg_color="#1e1e1e", border_width=1, border_color="#333333",
-            corner_radius=6, width=150
+        # Przycisk Mieczyka (Commander Damage)
+        self.btn_cmdr_damage = ctk.CTkButton(
+            self.center_stats_container,
+            text="⚔",
+            font=(FONT_UI, 12, "bold"),
+            width=30,
+            height=26,
+            fg_color="#252525",
+            hover_color="#333333",
+            command=self.toggle_cmdr_panel,
         )
+        self.btn_cmdr_damage.pack(side="left", padx=(6, 6))
 
-        ctk.CTkLabel(self.stats_panel, text="Deck Stats & %", font=("Kanisah", 11, "bold")).pack(pady=4)
-        self.card_list = ctk.CTkScrollableFrame(self.stats_panel, fg_color="transparent")
-        self.card_list.pack(fill="both", expand=True, padx=2, pady=2)
+        # Poison
+        self.btn_poison = ctk.CTkButton(
+            self.center_stats_container,
+            text="PSN: 0",
+            font=(FONT_UI, 11, "bold"),
+            width=52,
+            height=26,
+            fg_color="#252525",
+            hover_color="#333333",
+        )
+        self.btn_poison.pack(side="left", padx=(0, 0))
+        self.btn_poison.bind("<Button-1>", lambda e: self.change_poison(1))
+        self.btn_poison.bind("<Button-3>", lambda e: self.change_poison(-1))
 
-        for i in range(1, 8):
-            ctk.CTkLabel(self.card_list, text=f"Card #{i}: {100 // i}%", font=("Kanisah", 9), anchor="w").pack(fill="x")
+        # --- PLAYMAT AREA ---
+        self.center_area = ctk.CTkFrame(self.main_board, fg_color="transparent")
+        self.center_area.pack(fill="both", expand=True)
 
-        # --- CMDR DAMAGE DROPDOWN FLYOUT ---
+        self.btn_stats = ctk.CTkButton(
+            self.center_area,
+            text="STATS",
+            font=(FONT_UI, 10, "bold"),
+            width=48,
+            height=22,
+            fg_color="#252525",
+            hover_color="#333333",
+            command=self.toggle_stats_panel,
+        )
+        self.btn_stats.place(x=4, y=4)
+
+        # FLYOUTS
         self.cmdr_dropdown_frame = ctk.CTkFrame(
-            self.main_board, fg_color="#1e1e1e", border_width=1, border_color="#333333",
-            corner_radius=6, width=150
+            self.center_area,
+            fg_color="#1a1a1a",
+            border_width=1,
+            border_color="#333333",
+            corner_radius=8,
+            width=200,
         )
 
-        self.cmdr_labels = {}
-        for opp in self.opponents:
-            self._create_cmdr_damage_row(opp)
-
-        self.refresh_ui()
-
-    def _create_top_counter(self, parent, title: str, key: str, color: str, step: int = 1):
-        frame = ctk.CTkFrame(parent, fg_color="transparent")
-        frame.pack(side="right", padx=4)
-
-        ctk.CTkLabel(frame, text=title, font=("Kanisah", 10)).pack(side="left", padx=1)
-
-        btn_sub = ctk.CTkButton(
-            frame, text="-", width=16, height=16, font=("Kanisah", 8, "bold"),
-            command=lambda: self.adjust_state(key, -step)
+        self.stats_panel = ctk.CTkFrame(
+            self.center_area,
+            fg_color="#1a1a1a",
+            border_width=1,
+            border_color="#333333",
+            corner_radius=8,
+            width=230,
         )
-        btn_sub.pack(side="left", padx=1)
 
-        lbl_val = ctk.CTkLabel(frame, text="0", width=18, font=("Kanisah", 10, "bold"), text_color=color)
-        lbl_val.pack(side="left", padx=1)
-
-        btn_add = ctk.CTkButton(
-            frame, text="+", width=16, height=16, font=("Kanisah", 8, "bold"),
-            command=lambda: self.adjust_state(key, step)
+        lbl_stats_title = ctk.CTkLabel(
+            self.stats_panel,
+            text="Deck Stats & %",
+            font=(FONT_HEADER, 11, "bold"),
+            text_color="#FFFFFF",
         )
-        btn_add.pack(side="left", padx=1)
+        lbl_stats_title.pack(pady=(6, 2))
 
-        return lbl_val
-
-    def _create_cmdr_damage_row(self, opp_name: str):
-        row = ctk.CTkFrame(self.cmdr_dropdown_frame, fg_color="transparent")
-        row.pack(fill="x", padx=6, pady=2)
-
-        ctk.CTkLabel(row, text=f"{opp_name}:", font=("Kanisah", 9), anchor="w").pack(side="left")
-
-        btn_add = ctk.CTkButton(
-            row, text="+", width=16, height=16, font=("Kanisah", 9, "bold"),
-            command=lambda: self.adjust_cmdr_damage(opp_name, 1)
+        self.card_scroll_frame = ctk.CTkScrollableFrame(
+            self.stats_panel,
+            fg_color="transparent",
+            width=210,
+            height=160
         )
-        btn_add.pack(side="right", padx=1)
+        self.card_scroll_frame.pack(fill="both", expand=True, padx=4, pady=4)
+        self.populate_dummy_stats()
 
-        val_lbl = ctk.CTkLabel(row, text="0", width=18, font=("Kanisah", 10, "bold"), text_color="#c62828")
-        val_lbl.pack(side="right", padx=1)
+    def populate_dummy_stats(self):
+        sample_cards = [
+            ("Sol Ring", "38%"),
+            ("Cyclonic Rift", "24%"),
+            ("Rhystic Study", "18%"),
+            ("Arcane Signet", "12%"),
+            ("Counterspell", "8%"),
+        ]
+        for card_name, prob in sample_cards:
+            row = ctk.CTkFrame(self.card_scroll_frame, fg_color="transparent")
+            row.pack(fill="x", pady=2)
 
-        btn_sub = ctk.CTkButton(
-            row, text="-", width=16, height=16, font=("Kanisah", 9, "bold"),
-            command=lambda: self.adjust_cmdr_damage(opp_name, -1)
+            chk = ctk.CTkCheckBox(
+                row, text="", width=20, height=20, checkbox_width=18, checkbox_height=18, border_width=1, corner_radius=4
+            )
+            chk.pack(side="left", padx=(2, 4))
+
+            lbl = ctk.CTkLabel(row, text=f"{card_name}", font=(FONT_UI, 10), text_color="#DDDDDD", anchor="w")
+            lbl.pack(side="left", expand=True, fill="x")
+
+            lbl_pct = ctk.CTkLabel(row, text=prob, font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=35, anchor="e")
+            lbl_pct.pack(side="right", padx=(2, 2))
+
+    def init_cmdr_damage_ui(self):
+        for child in self.cmdr_dropdown_frame.winfo_children():
+            child.destroy()
+        self.cmdr_dmg_labels.clear()
+
+        if not self.engine or not hasattr(self.engine, "state"):
+            return
+
+        lbl_title = ctk.CTkLabel(
+            self.cmdr_dropdown_frame, text="Commander Damage", font=(FONT_UI, 10, "bold"), text_color="#888888"
         )
-        btn_sub.pack(side="right", padx=1)
+        lbl_title.pack(pady=(4, 2))
 
-        self.cmdr_labels[opp_name] = val_lbl
+        for p_id, opponent in self.engine.state.players.items():
+            if p_id == self.player_id:
+                continue
+
+            row_frame = ctk.CTkFrame(self.cmdr_dropdown_frame, fg_color="transparent")
+            row_frame.pack(fill="x", padx=8, pady=3)
+
+            lbl_opp = ctk.CTkLabel(
+                row_frame, text=f"⚔ {opponent.name}", font=(FONT_UI, 11, "bold"), text_color="#FFFFFF", anchor="w"
+            )
+            lbl_opp.pack(side="left", expand=True, fill="x")
+
+            btn_minus = ctk.CTkButton(
+                row_frame,
+                text="-",
+                font=(FONT_UI, 11, "bold"),
+                width=22,
+                height=22,
+                fg_color="#2d2d2d",
+                hover_color="#3d3d3d",
+                command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, -1),
+            )
+            btn_minus.pack(side="left", padx=2)
+
+            lbl_dmg = ctk.CTkLabel(row_frame, text="0", font=(FONT_UI, 12, "bold"), text_color="#FFFFFF", width=24)
+            lbl_dmg.pack(side="left", padx=2)
+
+            btn_plus = ctk.CTkButton(
+                row_frame,
+                text="+",
+                font=(FONT_UI, 11, "bold"),
+                width=22,
+                height=22,
+                fg_color="#2d2d2d",
+                hover_color="#3d3d3d",
+                command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, 1),
+            )
+            btn_plus.pack(side="left", padx=2)
+
+            self.cmdr_dmg_labels[p_id] = lbl_dmg
+
+    def update_from_state(self, state):
+        p_state = state.players.get(self.player_id)
+        if not p_state:
+            return
+
+        # Aktualizacja nazwy
+        if hasattr(p_state, "name") and p_state.name:
+            self.lbl_name.configure(text=p_state.name)
+
+        max_hp = getattr(p_state, "max_hp", DEFAULT_MAX_HP)
+
+        # HP & Kolory
+        ratio = p_state.hp / max_hp if max_hp > 0 else 1.0
+        hp_color = "#00FF66" if ratio > 0.75 else ("#B4FF00" if ratio > 0.5 else ("#FFB300" if ratio > 0.25 else "#FF3333"))
+        self.lbl_hp.configure(text=str(p_state.hp), text_color=hp_color)
+
+        # Poison & Tax
+        self.btn_poison.configure(text=f"PSN: {p_state.poison}")
+        self.btn_tax.configure(text=f"TAX: {p_state.cmdr_tax}")
+
+        # CMDR Damage
+        if not self.cmdr_dmg_labels:
+            self.init_cmdr_damage_ui()
+
+        for opp_id, lbl_dmg in self.cmdr_dmg_labels.items():
+            damage_val = p_state.cmdr_damage_received.get(opp_id, 0)
+            lbl_dmg.configure(
+                text=str(damage_val),
+                text_color="#FF4444" if damage_val >= 21 else "#FFFFFF",
+            )
+
+        # Status Tury i Życia
+        current_player = state.get_current_player() if hasattr(state, "get_current_player") else None
+
+        if not p_state.is_alive:
+            self.lbl_status.configure(text="DEAD", text_color="#FF3333")
+            self.configure(border_color="#FF3333")
+        elif current_player and current_player.player_id == self.player_id:
+            self.lbl_status.configure(text="● ACTIVE", text_color="#00FF66")
+            self.configure(border_color=self.border_active)
+        else:
+            self.lbl_status.configure(text="WAITING", text_color="#666666")
+            self.configure(border_color=self.border_inactive)
+
+    def _refresh_and_notify(self):
+        if self.engine:
+            self.engine.notify_subscribers()
+
+    def change_hp(self, delta: int):
+        p_state = self.engine.state.players.get(self.player_id) if self.engine else None
+        if p_state:
+            p_state.update_hp(delta)
+            self._refresh_and_notify()
+
+    def change_poison(self, delta: int):
+        p_state = self.engine.state.players.get(self.player_id) if self.engine else None
+        if p_state:
+            p_state.update_poison(delta)
+            self._refresh_and_notify()
+
+    def change_tax(self, delta: int):
+        p_state = self.engine.state.players.get(self.player_id) if self.engine else None
+        if p_state:
+            p_state.update_tax(delta)
+            self._refresh_and_notify()
+
+    def change_cmdr_damage(self, opponent_id: str, delta: int):
+        p_state = self.engine.state.players.get(self.player_id) if self.engine else None
+        if p_state:
+            p_state.receive_cmdr_damage(opponent_id, delta)
+            self._refresh_and_notify()
 
     def toggle_stats_panel(self):
-        """Wysuwa/chowa statystyki talii jako nakładkę (overlay)."""
         if self.is_stats_visible:
             self.stats_panel.place_forget()
             self.is_stats_visible = False
         else:
-            self.stats_panel.place(relx=0.0, rely=0.0, relheight=1.0)
+            if self.is_cmdr_visible:
+                self.toggle_cmdr_panel()
+            self.stats_panel.place(x=4, y=30)
             self.stats_panel.lift()
+            self.btn_stats.lift()
             self.is_stats_visible = True
 
     def toggle_cmdr_panel(self):
-        """Wysuwa/chowa podgląd Commander Damage jako małe pływające okienko."""
         if self.is_cmdr_visible:
             self.cmdr_dropdown_frame.place_forget()
             self.is_cmdr_visible = False
         else:
-            self.cmdr_dropdown_frame.place(x=85, y=5)
+            if self.is_stats_visible:
+                self.toggle_stats_panel()
+            self.cmdr_dropdown_frame.place(relx=0.5, y=0, anchor="n")
             self.cmdr_dropdown_frame.lift()
             self.is_cmdr_visible = True
-
-    def adjust_hp(self, delta: int):
-        self.state["hp"] += delta
-        self.refresh_ui()
-
-    def adjust_state(self, key: str, delta: int):
-        self.state[key] = max(0, self.state[key] + delta)
-        self.refresh_ui()
-
-    def adjust_cmdr_damage(self, opp_name: str, delta: int):
-        self.state["cmdr_damage"][opp_name] = max(0, self.state["cmdr_damage"][opp_name] + delta)
-        self.refresh_ui()
-
-    def refresh_ui(self):
-        self.hp_lbl.configure(text=str(self.state["hp"]))
-        self.poison_lbl.configure(text=str(self.state["poison"]))
-        self.tax_lbl.configure(text=f"+{self.state['cmdr_tax']}")
-
-        for opp, lbl in self.cmdr_labels.items():
-            lbl.configure(text=str(self.state["cmdr_damage"][opp]))
