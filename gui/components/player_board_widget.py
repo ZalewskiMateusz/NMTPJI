@@ -46,7 +46,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         )
         self.lbl_name.pack(side="left", padx=(10, 5))
 
-        # Status
+        # Status (ACTIVE / WAITING / DEAD)
         self.lbl_status = ctk.CTkLabel(
             self.top_bar,
             text="WAITING",
@@ -55,7 +55,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         )
         self.lbl_status.pack(side="right", padx=(0, 10))
 
-        # Środek nagłówka: TAX | - | HP | + | ⚔ | PSN
+        # --- ŚRODEK NAGŁÓWKA: TAX | -5 | -1 | HP | +1 | +5 | ⚔ | PSN ---
         self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.center_stats_container.place(relx=0.5, rely=0.5, anchor="center")
 
@@ -73,7 +73,20 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.btn_tax.bind("<Button-1>", lambda e: self.change_tax(2))
         self.btn_tax.bind("<Button-3>", lambda e: self.change_tax(-2))
 
-        # HP Minus
+        # HP Minus 5
+        self.btn_minus_5_hp = ctk.CTkButton(
+            self.center_stats_container,
+            text="-5",
+            font=(FONT_UI, 11, "bold"),
+            width=28,
+            height=28,
+            fg_color="#2a2a2a",
+            hover_color="#3a3a3a",
+            command=lambda: self.change_hp(-5),
+        )
+        self.btn_minus_5_hp.pack(side="left", padx=1)
+
+        # HP Minus 1
         self.btn_minus_hp = ctk.CTkButton(
             self.center_stats_container,
             text="−",
@@ -84,7 +97,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
             hover_color="#3a3a3a",
             command=lambda: self.change_hp(-1),
         )
-        self.btn_minus_hp.pack(side="left", padx=2)
+        self.btn_minus_hp.pack(side="left", padx=1)
 
         # HP Label
         self.lbl_hp = ctk.CTkLabel(
@@ -92,11 +105,11 @@ class PlayerBoardWidget(ctk.CTkFrame):
             text=str(DEFAULT_MAX_HP),
             font=(FONT_HEADER, 22, "bold"),
             text_color="#00FF66",
-            width=50,
+            width=46,
         )
         self.lbl_hp.pack(side="left", padx=2)
 
-        # HP Plus
+        # HP Plus 1
         self.btn_plus_hp = ctk.CTkButton(
             self.center_stats_container,
             text="+",
@@ -107,9 +120,22 @@ class PlayerBoardWidget(ctk.CTkFrame):
             hover_color="#3a3a3a",
             command=lambda: self.change_hp(1),
         )
-        self.btn_plus_hp.pack(side="left", padx=2)
+        self.btn_plus_hp.pack(side="left", padx=1)
 
-        # Przycisk Mieczyka (Commander Damage)
+        # HP Plus 5
+        self.btn_plus_5_hp = ctk.CTkButton(
+            self.center_stats_container,
+            text="+5",
+            font=(FONT_UI, 11, "bold"),
+            width=28,
+            height=28,
+            fg_color="#2a2a2a",
+            hover_color="#3a3a3a",
+            command=lambda: self.change_hp(5),
+        )
+        self.btn_plus_5_hp.pack(side="left", padx=1)
+
+        # Przycisk Mieczyka (Commander Damage Panel)
         self.btn_cmdr_damage = ctk.CTkButton(
             self.center_stats_container,
             text="⚔",
@@ -122,7 +148,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         )
         self.btn_cmdr_damage.pack(side="left", padx=(6, 6))
 
-        # Poison
+        # Poison (PPM: -1, LPM: +1)
         self.btn_poison = ctk.CTkButton(
             self.center_stats_container,
             text="PSN: 0",
@@ -136,7 +162,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.btn_poison.bind("<Button-1>", lambda e: self.change_poison(1))
         self.btn_poison.bind("<Button-3>", lambda e: self.change_poison(-1))
 
-        # --- PLAYMAT AREA ---
+        # --- PLAYMAT / CENTER AREA ---
         self.center_area = ctk.CTkFrame(self.main_board, fg_color="transparent")
         self.center_area.pack(fill="both", expand=True)
 
@@ -152,7 +178,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         )
         self.btn_stats.place(x=4, y=4)
 
-        # FLYOUTS
+        # --- FLYOUT PANELS ---
         self.cmdr_dropdown_frame = ctk.CTkFrame(
             self.center_area,
             fg_color="#1a1a1a",
@@ -270,22 +296,32 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not p_state:
             return
 
-        # Aktualizacja nazwy
+        # --- AUTOMATYCZNE SPRAWDZANIE WARUNKÓW ŚMIERCI (REGUŁY EDH) ---
+        has_zero_hp = p_state.hp <= 0
+        has_10_poison = getattr(p_state, "poison", 0) >= 10
+        has_21_cmdr_dmg = any(dmg >= 21 for dmg in getattr(p_state, "cmdr_damage_received", {}).values())
+
+        if has_zero_hp or has_10_poison or has_21_cmdr_dmg:
+            p_state.is_alive = False
+        else:
+            p_state.is_alive = True
+
+        # Odświeżenie nazwy gracza
         if hasattr(p_state, "name") and p_state.name:
             self.lbl_name.configure(text=p_state.name)
 
         max_hp = getattr(p_state, "max_hp", DEFAULT_MAX_HP)
 
-        # HP & Kolory
+        # Życie & Kolorystyka HP
         ratio = p_state.hp / max_hp if max_hp > 0 else 1.0
         hp_color = "#00FF66" if ratio > 0.75 else ("#B4FF00" if ratio > 0.5 else ("#FFB300" if ratio > 0.25 else "#FF3333"))
         self.lbl_hp.configure(text=str(p_state.hp), text_color=hp_color)
 
-        # Poison & Tax
+        # Poison & Commander Tax
         self.btn_poison.configure(text=f"PSN: {p_state.poison}")
         self.btn_tax.configure(text=f"TAX: {p_state.cmdr_tax}")
 
-        # CMDR Damage
+        # Obrażenia od Commanderów
         if not self.cmdr_dmg_labels:
             self.init_cmdr_damage_ui()
 
@@ -296,7 +332,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
                 text_color="#FF4444" if damage_val >= 21 else "#FFFFFF",
             )
 
-        # Status Tury i Życia
+        # Status Śmierci / Aktywnej Tury
         current_player = state.get_current_player() if hasattr(state, "get_current_player") else None
 
         if not p_state.is_alive:
