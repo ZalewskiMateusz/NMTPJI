@@ -9,7 +9,7 @@ class CreateRoomView(ctk.CTkFrame):
     def __init__(self, master):
         super().__init__(master, fg_color="#121212")
 
-        # Główny wyśrodkowany kontener (karta formularza)
+        # Główny wyśrodkowany kontener
         self.card_frame = ctk.CTkFrame(
             self,
             fg_color="#1E1E1E",
@@ -20,7 +20,7 @@ class CreateRoomView(ctk.CTkFrame):
         )
         self.card_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Title
+        # Nagłówek
         self.title_label = ctk.CTkLabel(
             self.card_frame,
             text="CREATE GAME ROOM",
@@ -37,7 +37,7 @@ class CreateRoomView(ctk.CTkFrame):
         )
         self.subtitle_label.pack(pady=(0, 15))
 
-        # 1. Room Name
+        # 1. Nazwa pokoju
         self.name_label = ctk.CTkLabel(self.card_frame, text="Room Name", font=("Segoe UI", 12), anchor="w")
         self.name_label.pack(fill="x", padx=30, pady=(2, 0))
 
@@ -51,23 +51,23 @@ class CreateRoomView(ctk.CTkFrame):
         )
         self.room_name_entry.pack(fill="x", padx=30, pady=(0, 8))
 
-        # 2. Game Format
+        # 2. Format gry (SZTYWNO: Commander / EDH)
         self.format_label = ctk.CTkLabel(self.card_frame, text="Game Format", font=("Segoe UI", 12), anchor="w")
         self.format_label.pack(fill="x", padx=30, pady=(2, 0))
 
-        self.format_option_menu = ctk.CTkOptionMenu(
+        self.format_display = ctk.CTkLabel(
             self.card_frame,
-            values=["Commander / EDH", "Standard", "Casual 60-Card", "1v1 Duel Commander"],
+            text="Commander / EDH",
+            font=("Segoe UI", 13, "bold"),
+            text_color="#00FF66",
             fg_color="#2B2B2B",
-            button_color="#3A3A3A",
-            button_hover_color="#00FF66",
-            dropdown_fg_color="#1E1E1E",
             corner_radius=8,
-            height=34
+            height=34,
+            anchor="center"
         )
-        self.format_option_menu.pack(fill="x", padx=30, pady=(0, 8))
+        self.format_display.pack(fill="x", padx=30, pady=(0, 8))
 
-        # 3. Max Players
+        # 3. Liczba graczy
         self.players_label = ctk.CTkLabel(self.card_frame, text="Max Players", font=("Segoe UI", 12), anchor="w")
         self.players_label.pack(fill="x", padx=30, pady=(2, 0))
 
@@ -85,7 +85,7 @@ class CreateRoomView(ctk.CTkFrame):
         self.players_segmented.set("4")
         self.players_segmented.pack(fill="x", padx=30, pady=(0, 8))
 
-        # 4. Password
+        # 4. Hasło (opcjonalne)
         self.pass_label = ctk.CTkLabel(self.card_frame, text="Password (Optional)", font=("Segoe UI", 12), anchor="w")
         self.pass_label.pack(fill="x", padx=30, pady=(2, 0))
 
@@ -100,7 +100,7 @@ class CreateRoomView(ctk.CTkFrame):
         )
         self.password_entry.pack(fill="x", padx=30, pady=(0, 8))
 
-        # 5. Select Deck
+        # 5. Wybór talii
         self.deck_label = ctk.CTkLabel(self.card_frame, text="Select Deck", font=("Segoe UI", 12), anchor="w")
         self.deck_label.pack(fill="x", padx=30, pady=(2, 0))
 
@@ -119,25 +119,27 @@ class CreateRoomView(ctk.CTkFrame):
         )
         self.deck_option_menu.pack(fill="x", padx=30, pady=(0, 8))
 
-        # 6. Commander (dla EDH)
-        self.commander_label = ctk.CTkLabel(self.card_frame, text="Commander Name", font=("Segoe UI", 12), anchor="w")
+        # 6. Wybór Commandera (Lista rozwijana wyciągana z wybranej talii)
+        self.commander_label = ctk.CTkLabel(self.card_frame, text="Select Commander", font=("Segoe UI", 12), anchor="w")
         self.commander_label.pack(fill="x", padx=30, pady=(2, 0))
 
-        self.commander_entry = ctk.CTkEntry(
+        self.commander_option_menu = ctk.CTkOptionMenu(
             self.card_frame,
-            placeholder_text="e.g. Nekusar, the Mindrazer",
+            values=["Select a deck first"],
             fg_color="#2B2B2B",
-            border_width=0,
+            button_color="#3A3A3A",
+            button_hover_color="#00FF66",
+            dropdown_fg_color="#1E1E1E",
             corner_radius=8,
             height=34
         )
-        self.commander_entry.pack(fill="x", padx=30, pady=(0, 20))
+        self.commander_option_menu.pack(fill="x", padx=30, pady=(0, 20))
 
-        # Automatyczne odczytanie dowódcy dla pierwszej talii na liście
+        # Załadowanie kart dla pierwszej talii przy starcie
         if deck_names and deck_names[0] != "No decks available":
             self.on_deck_change(deck_names[0])
 
-        # 7. Action Buttons
+        # 7. Przyciski akcji
         self.btn_frame = ctk.CTkFrame(self.card_frame, fg_color="transparent")
         self.btn_frame.pack(fill="x", padx=30, pady=(0, 20))
 
@@ -158,22 +160,58 @@ class CreateRoomView(ctk.CTkFrame):
         self.cancel_btn.pack(side="right", expand=True, fill="x", padx=(5, 0))
 
     def on_deck_change(self, selected_deck_name):
-        """Pobiera dane talii z bazy i automatycznie wpisuje przypisanego Commandera."""
-        deck = DBManager.get_deck_by_name(selected_deck_name) if hasattr(DBManager, "get_deck_by_name") else None
-        if deck and isinstance(deck, dict):
-            commander_name = deck.get("commander", "")
-            self.commander_entry.delete(0, "end")
-            self.commander_entry.insert(0, commander_name)
+        """Pobiera karty oraz zapisanego dowódcę dla wybranej talii i odświeża listę UI."""
+        # 1. Pobranie informacji o talii bezpośrednio z bazy
+        deck_info = {}
+        if hasattr(DBManager, "get_deck_by_name"):
+            deck_info = DBManager.get_deck_by_name(selected_deck_name) or {}
+
+        # 2. Wyciągnięcie słownika kart
+        cards_dict = {}
+        if isinstance(deck_info, dict) and "cards" in deck_info:
+            cards_dict = deck_info.get("cards", {})
+        elif hasattr(DBManager, "get_deck_cards"):
+            cards_dict = DBManager.get_deck_cards(selected_deck_name) or {}
+
+        # 3. Wyciągnięcie nazwy zapisanego dowódcy
+        saved_commander = deck_info.get("commander", "") if isinstance(deck_info, dict) else ""
+
+        # 4. Przekształcenie kart na listę nazw
+        card_names = []
+        if isinstance(cards_dict, dict):
+            card_names = list(cards_dict.keys())
+        elif isinstance(cards_dict, (list, tuple)):
+            for item in cards_dict:
+                if isinstance(item, str):
+                    card_names.append(item)
+                elif isinstance(item, dict):
+                    name = item.get("name") or item.get("card_name")
+                    if name:
+                        card_names.append(str(name))
+
+        # 5. Aktualizacja komponentu UI
+        if card_names:
+            card_names = sorted(list(set(card_names)))
+            self.commander_option_menu.configure(values=card_names)
+
+            # Jeśli dowódca jest zapisany i znajduje się w talii -> wybierz go
+            if saved_commander and saved_commander in card_names:
+                self.commander_option_menu.set(saved_commander)
+            else:
+                self.commander_option_menu.set(card_names[0])
+        else:
+            self.commander_option_menu.configure(values=["No cards in deck"])
+            self.commander_option_menu.set("No cards in deck")
 
     def create_room_action(self):
         room_config = {
             "game_id": str(uuid.uuid4()),
             "name": self.room_name_entry.get() or "Commander Match",
-            "format": self.format_option_menu.get(),
+            "format": "Commander / EDH",
             "max_players": int(self.players_segmented.get()),
             "password": self.password_entry.get(),
             "selected_deck": self.deck_option_menu.get(),
-            "commander": self.commander_entry.get()
+            "commander": self.commander_option_menu.get()
         }
 
         if hasattr(self.master, "start_game_room"):

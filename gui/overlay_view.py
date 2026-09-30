@@ -147,13 +147,22 @@ class OverlayView(ctk.CTkFrame):
 
         positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
 
+        # --- POBIERANIE TALII Z ROOM_CONFIG ---
+        # Wyciągamy słownik kart ("deck_cards") lub samą nazwę talii ("selected_deck")
+        selected_deck = self.room_config.get("deck_cards") or self.room_config.get("selected_deck")
+
         for i, (p_id, p_state) in enumerate(self.engine.state.players.items()):
             row, col = positions[i]
+
+            # Przekazujemy talię tylko dla Gracza 1 (Hosta/Ciebie)
+            deck_to_pass = selected_deck if p_id == "p1" else None
+
             board = PlayerBoardWidget(
                 parent=self.boards_container,
                 player_id=p_id,
                 player_name=p_state.name,
                 engine=self.engine,
+                deck_cards=deck_to_pass,  # <--- TUTAJ PRZEKAZUJEMY TALIĘ
             )
             board.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
             self.player_widgets[p_id] = board

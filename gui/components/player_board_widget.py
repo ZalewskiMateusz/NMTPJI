@@ -1,12 +1,57 @@
+import os
+import threading
 import customtkinter as ctk
+from PIL import Image
+
+from core.calculator import OddsCalculator
+from core.scryfall import ScryfallAPI
+from database.db_manager import DBManager
 
 FONT_HEADER = "Georgia"
 FONT_UI = "Segoe UI"
 DEFAULT_MAX_HP = 40
 
 
+class CardHoverTooltip(ctk.CTkToplevel):
+    def __init__(self, master):
+        super().__init__(master)
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)
+        self.configure(fg_color="#1E1E1E")
+        self.withdraw()
+
+        self.lbl_image = ctk.CTkLabel(self, text="Pobieranie...")
+        self.lbl_image.pack(padx=4, pady=4)
+        self.active_card_name = None
+        self._current_img = None  # Wskaźnik na obrazek (ochrona przed Garbage Collector)
+
+    def show_image(self, img_path, x, y, card_name):
+        self.active_card_name = card_name
+        if img_path and os.path.exists(img_path):
+            try:
+                pil_img = Image.open(img_path)
+                self._current_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(200, 280))
+                self.lbl_image.configure(image=self._current_img, text="")
+            except Exception:
+                self._current_img = None
+                self.lbl_image.configure(image="", text="Błąd obrazu")
+        else:
+            self._current_img = None
+            self.lbl_image.configure(image="", text="Brak obrazu")
+
+        # Ustawienie pozycji okna po prawej stronie przycisku
+        self.geometry(f"+{x + 25}+{y - 100}")
+        self.deiconify()
+        self.lift()
+
+    def hide(self):
+        self.active_card_name = None
+        self._current_img = None
+        self.withdraw()
+
+
 class PlayerBoardWidget(ctk.CTkFrame):
-    def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, **kwargs):
+    def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, deck_cards=None, **kwargs):
         self.border_inactive = "#2a2a2a"
         self.border_active = "#00FF66"
 
@@ -27,6 +72,12 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.is_cmdr_visible = False
 
         self.cmdr_dmg_labels = {}
+        self.card_states = {}
+        self.card_row_widgets = {}  # Zachowuje wskaźniki do wierszy UI
+
+        self.hide_drawn_var = ctk.BooleanVar(value=False)
+        self.draw_x_var = ctk.StringVar(value="1")
+        self.tooltip = CardHoverTooltip(self)
 
         # --- MAIN BOARD ---
         self.main_board = ctk.CTkFrame(self, fg_color="transparent")
@@ -36,206 +87,274 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.top_bar = ctk.CTkFrame(self.main_board, fg_color="#1a1a1a", corner_radius=8)
         self.top_bar.pack(fill="x", side="top", pady=(0, 5), ipady=4)
 
-        # Nick
         self.lbl_name = ctk.CTkLabel(
-            self.top_bar,
-            text=self.player_name,
-            font=(FONT_UI, 15, "bold"),
-            text_color="#FFFFFF",
-            anchor="w",
+            self.top_bar, text=self.player_name, font=(FONT_UI, 15, "bold"), text_color="#FFFFFF", anchor="w"
         )
         self.lbl_name.pack(side="left", padx=(10, 5))
 
-        # Status (ACTIVE / WAITING / DEAD)
         self.lbl_status = ctk.CTkLabel(
-            self.top_bar,
-            text="WAITING",
-            font=(FONT_UI, 11, "bold"),
-            text_color="#666666",
+            self.top_bar, text="WAITING", font=(FONT_UI, 11, "bold"), text_color="#666666"
         )
         self.lbl_status.pack(side="right", padx=(0, 10))
 
-        # --- ŚRODEK NAGŁÓWKA: TAX | -5 | -1 | HP | +1 | +5 | ⚔ | PSN ---
+        # STATS CENTER
         self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.center_stats_container.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Tax
-        self.btn_tax = ctk.CTkButton(
-            self.center_stats_container,
-            text="TAX: 0",
-            font=(FONT_UI, 11, "bold"),
-            width=52,
-            height=26,
-            fg_color="#252525",
-            hover_color="#333333",
-        )
+        self.btn_tax = ctk.CTkButton(self.center_stats_container, text="TAX: 0", font=(FONT_UI, 11, "bold"), width=52, height=26, fg_color="#252525", hover_color="#333333")
         self.btn_tax.pack(side="left", padx=(0, 6))
         self.btn_tax.bind("<Button-1>", lambda e: self.change_tax(2))
         self.btn_tax.bind("<Button-3>", lambda e: self.change_tax(-2))
 
-        # HP Minus 5
-        self.btn_minus_5_hp = ctk.CTkButton(
-            self.center_stats_container,
-            text="-5",
-            font=(FONT_UI, 11, "bold"),
-            width=28,
-            height=28,
-            fg_color="#2a2a2a",
-            hover_color="#3a3a3a",
-            command=lambda: self.change_hp(-5),
-        )
+        self.btn_minus_5_hp = ctk.CTkButton(self.center_stats_container, text="-5", font=(FONT_UI, 11, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(-5))
         self.btn_minus_5_hp.pack(side="left", padx=1)
 
-        # HP Minus 1
-        self.btn_minus_hp = ctk.CTkButton(
-            self.center_stats_container,
-            text="−",
-            font=(FONT_UI, 16, "bold"),
-            width=28,
-            height=28,
-            fg_color="#2a2a2a",
-            hover_color="#3a3a3a",
-            command=lambda: self.change_hp(-1),
-        )
+        self.btn_minus_hp = ctk.CTkButton(self.center_stats_container, text="−", font=(FONT_UI, 16, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(-1))
         self.btn_minus_hp.pack(side="left", padx=1)
 
-        # HP Label
-        self.lbl_hp = ctk.CTkLabel(
-            self.center_stats_container,
-            text=str(DEFAULT_MAX_HP),
-            font=(FONT_HEADER, 22, "bold"),
-            text_color="#00FF66",
-            width=46,
-        )
+        self.lbl_hp = ctk.CTkLabel(self.center_stats_container, text=str(DEFAULT_MAX_HP), font=(FONT_HEADER, 22, "bold"), text_color="#00FF66", width=46)
         self.lbl_hp.pack(side="left", padx=2)
 
-        # HP Plus 1
-        self.btn_plus_hp = ctk.CTkButton(
-            self.center_stats_container,
-            text="+",
-            font=(FONT_UI, 16, "bold"),
-            width=28,
-            height=28,
-            fg_color="#2a2a2a",
-            hover_color="#3a3a3a",
-            command=lambda: self.change_hp(1),
-        )
+        self.btn_plus_hp = ctk.CTkButton(self.center_stats_container, text="+", font=(FONT_UI, 16, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(1))
         self.btn_plus_hp.pack(side="left", padx=1)
 
-        # HP Plus 5
-        self.btn_plus_5_hp = ctk.CTkButton(
-            self.center_stats_container,
-            text="+5",
-            font=(FONT_UI, 11, "bold"),
-            width=28,
-            height=28,
-            fg_color="#2a2a2a",
-            hover_color="#3a3a3a",
-            command=lambda: self.change_hp(5),
-        )
+        self.btn_plus_5_hp = ctk.CTkButton(self.center_stats_container, text="+5", font=(FONT_UI, 11, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(5))
         self.btn_plus_5_hp.pack(side="left", padx=1)
 
-        # Przycisk Mieczyka (Commander Damage Panel)
-        self.btn_cmdr_damage = ctk.CTkButton(
-            self.center_stats_container,
-            text="⚔",
-            font=(FONT_UI, 12, "bold"),
-            width=30,
-            height=26,
-            fg_color="#252525",
-            hover_color="#333333",
-            command=self.toggle_cmdr_panel,
-        )
+        self.btn_cmdr_damage = ctk.CTkButton(self.center_stats_container, text="⚔", font=(FONT_UI, 12, "bold"), width=30, height=26, fg_color="#252525", hover_color="#333333", command=self.toggle_cmdr_panel)
         self.btn_cmdr_damage.pack(side="left", padx=(6, 6))
 
-        # Poison (PPM: -1, LPM: +1)
-        self.btn_poison = ctk.CTkButton(
-            self.center_stats_container,
-            text="PSN: 0",
-            font=(FONT_UI, 11, "bold"),
-            width=52,
-            height=26,
-            fg_color="#252525",
-            hover_color="#333333",
-        )
+        self.btn_poison = ctk.CTkButton(self.center_stats_container, text="PSN: 0", font=(FONT_UI, 11, "bold"), width=52, height=26, fg_color="#252525", hover_color="#333333")
         self.btn_poison.pack(side="left", padx=(0, 0))
         self.btn_poison.bind("<Button-1>", lambda e: self.change_poison(1))
         self.btn_poison.bind("<Button-3>", lambda e: self.change_poison(-1))
 
-        # --- PLAYMAT / CENTER AREA ---
         self.center_area = ctk.CTkFrame(self.main_board, fg_color="transparent")
         self.center_area.pack(fill="both", expand=True)
 
-        self.btn_stats = ctk.CTkButton(
-            self.center_area,
-            text="STATS",
-            font=(FONT_UI, 10, "bold"),
-            width=48,
-            height=22,
-            fg_color="#252525",
-            hover_color="#333333",
-            command=self.toggle_stats_panel,
-        )
+        self.btn_stats = ctk.CTkButton(self.center_area, text="STATS", font=(FONT_UI, 10, "bold"), width=48, height=22, fg_color="#252525", hover_color="#333333", command=self.toggle_stats_panel)
         self.btn_stats.place(x=4, y=4)
 
-        # --- FLYOUT PANELS ---
-        self.cmdr_dropdown_frame = ctk.CTkFrame(
-            self.center_area,
-            fg_color="#1a1a1a",
-            border_width=1,
-            border_color="#333333",
-            corner_radius=8,
-            width=200,
-        )
+        self.cmdr_dropdown_frame = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333", corner_radius=8, width=200)
 
-        self.stats_panel = ctk.CTkFrame(
-            self.center_area,
-            fg_color="#1a1a1a",
-            border_width=1,
-            border_color="#333333",
-            corner_radius=8,
-            width=230,
-        )
+        self._setup_stats_panel_ui()
+        self.load_deck(deck_cards or {})
 
-        lbl_stats_title = ctk.CTkLabel(
-            self.stats_panel,
-            text="Deck Stats & %",
-            font=(FONT_HEADER, 11, "bold"),
-            text_color="#FFFFFF",
-        )
+    def _setup_stats_panel_ui(self):
+        self.stats_panel = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333", corner_radius=8, width=280)
+
+        lbl_stats_title = ctk.CTkLabel(self.stats_panel, text="Deck Stats & Probability", font=(FONT_HEADER, 11, "bold"), text_color="#FFFFFF")
         lbl_stats_title.pack(pady=(6, 2))
 
-        self.card_scroll_frame = ctk.CTkScrollableFrame(
-            self.stats_panel,
-            fg_color="transparent",
-            width=210,
-            height=160
-        )
-        self.card_scroll_frame.pack(fill="both", expand=True, padx=4, pady=4)
-        self.populate_dummy_stats()
+        filter_bar = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
+        filter_bar.pack(fill="x", padx=6, pady=2)
 
-    def populate_dummy_stats(self):
-        sample_cards = [
-            ("Sol Ring", "38%"),
-            ("Cyclonic Rift", "24%"),
-            ("Rhystic Study", "18%"),
-            ("Arcane Signet", "12%"),
-            ("Counterspell", "8%"),
-        ]
-        for card_name, prob in sample_cards:
+        lbl_draw = ctk.CTkLabel(filter_bar, text="Draw X:", font=(FONT_UI, 9), text_color="#AAAAAA")
+        lbl_draw.pack(side="left", padx=(2, 2))
+
+        entry_draw = ctk.CTkEntry(filter_bar, textvariable=self.draw_x_var, width=32, height=20, font=(FONT_UI, 9), justify="center")
+        entry_draw.pack(side="left", padx=(0, 2))
+        entry_draw.bind("<KeyRelease>", lambda e: self.recalculate_probabilities())
+
+        self.lbl_gen_prob = ctk.CTkLabel(filter_bar, text="(0.0%)", font=(FONT_UI, 9, "bold"), text_color="#00FF66")
+        self.lbl_gen_prob.pack(side="left", padx=(2, 6))
+
+        chk_hide = ctk.CTkCheckBox(
+            filter_bar,
+            text="Hide drawn",
+            font=(FONT_UI, 9),
+            variable=self.hide_drawn_var,
+            checkbox_width=14,
+            checkbox_height=14,
+            border_width=1,
+            command=self.apply_visibility_filter
+        )
+        chk_hide.pack(side="right", padx=(0, 2))
+
+        self.card_scroll_frame = ctk.CTkScrollableFrame(self.stats_panel, fg_color="transparent", width=260, height=180)
+        self.card_scroll_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+    def load_deck(self, raw_deck):
+        self.card_states.clear()
+        cards_dict = {}
+
+        if isinstance(raw_deck, str) and raw_deck.strip():
+            if hasattr(DBManager, "get_deck_by_name"):
+                deck_info = DBManager.get_deck_by_name(raw_deck) or {}
+                cards_dict = deck_info.get("cards", {})
+            elif hasattr(DBManager, "get_deck_cards"):
+                cards_dict = DBManager.get_deck_cards(raw_deck) or {}
+        elif isinstance(raw_deck, (dict, list)):
+            cards_dict = raw_deck
+
+        if isinstance(cards_dict, dict):
+            for c_name, qty in cards_dict.items():
+                try:
+                    q = int(qty)
+                except (ValueError, TypeError):
+                    q = 1
+                self.card_states[str(c_name)] = {"max_qty": q, "drawn_qty": 0}
+        elif isinstance(cards_dict, list):
+            for item in cards_dict:
+                if isinstance(item, dict):
+                    name = item.get("name") or item.get("card_name") or "Unknown"
+                    qty = item.get("count") or item.get("qty") or 1
+                    self.card_states[str(name)] = {"max_qty": int(qty), "drawn_qty": 0}
+                elif isinstance(item, str):
+                    current = self.card_states.get(item, {}).get("max_qty", 0)
+                    self.card_states[item] = {"max_qty": current + 1, "drawn_qty": 0}
+
+        self.build_deck_stats_ui()
+
+    @property
+    def current_deck_size(self) -> int:
+        """Zwraca realną liczbę kart pozostałych W TALII."""
+        total_remaining = 0
+        for info in self.card_states.values():
+            left = info["max_qty"] - info["drawn_qty"]
+            total_remaining += max(0, left)
+        return total_remaining
+
+    def build_deck_stats_ui(self):
+        """Buduje strukturę UI tylko raz przy ładowaniu talii."""
+        if not hasattr(self, "card_scroll_frame"):
+            return
+
+        for child in self.card_scroll_frame.winfo_children():
+            child.destroy()
+        self.card_row_widgets.clear()
+
+        if not self.card_states:
+            lbl_empty = ctk.CTkLabel(self.card_scroll_frame, text="Brak kart w talii", font=(FONT_UI, 11, "italic"), text_color="#666666")
+            lbl_empty.pack(pady=20)
+            return
+
+        for card_name, info in sorted(self.card_states.items()):
+            max_qty = info["max_qty"]
+            drawn_qty = info["drawn_qty"]
+
             row = ctk.CTkFrame(self.card_scroll_frame, fg_color="transparent")
             row.pack(fill="x", pady=2)
+            self.card_row_widgets[card_name] = row
 
-            chk = ctk.CTkCheckBox(
-                row, text="", width=20, height=20, checkbox_width=18, checkbox_height=18, border_width=1, corner_radius=4
+            if max_qty == 1:
+                chk_var = ctk.BooleanVar(value=(drawn_qty > 0))
+                chk = ctk.CTkCheckBox(
+                    row, text="", width=18, height=18, checkbox_width=15, checkbox_height=15, border_width=1, corner_radius=3, variable=chk_var,
+                    command=lambda name=card_name, var=chk_var: self._on_single_card_toggle(name, var)
+                )
+                chk.pack(side="left", padx=(2, 2))
+            else:
+                cnt_var = ctk.StringVar(value=f"{drawn_qty}/{max_qty}")
+                btn_m = ctk.CTkButton(row, text="-", width=14, height=14, font=(FONT_UI, 8), command=lambda n=card_name: self._change_card_qty(n, -1))
+                btn_m.pack(side="left", padx=1)
+
+                lbl_c = ctk.CTkLabel(row, textvariable=cnt_var, font=(FONT_UI, 9), width=20)
+                lbl_c.pack(side="left")
+
+                btn_p = ctk.CTkButton(row, text="+", width=14, height=14, font=(FONT_UI, 8), command=lambda n=card_name: self._change_card_qty(n, 1))
+                btn_p.pack(side="left", padx=1)
+                info["cnt_var"] = cnt_var
+
+            # Prawidłowe przekazanie btn_eye do lambda komendy
+            btn_eye = ctk.CTkButton(
+                row, text="👁", width=18, height=18, font=(FONT_UI, 9), fg_color="#252525", hover_color="#3a3a3a"
             )
-            chk.pack(side="left", padx=(2, 4))
+            btn_eye.configure(command=lambda name=card_name, b=btn_eye: self._show_card_preview(name, b))
+            btn_eye.pack(side="left", padx=(2, 4))
 
-            lbl = ctk.CTkLabel(row, text=f"{card_name}", font=(FONT_UI, 10), text_color="#DDDDDD", anchor="w")
-            lbl.pack(side="left", expand=True, fill="x")
+            lbl_name = ctk.CTkLabel(row, text=card_name, font=(FONT_UI, 10), text_color="#DDDDDD", anchor="w")
+            lbl_name.pack(side="left", expand=True, fill="x")
 
-            lbl_pct = ctk.CTkLabel(row, text=prob, font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=35, anchor="e")
+            lbl_pct = ctk.CTkLabel(row, text="0.0%", font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=42, anchor="e")
             lbl_pct.pack(side="right", padx=(2, 2))
+            info["lbl_pct"] = lbl_pct
+
+        self.apply_visibility_filter()
+        self.recalculate_probabilities()
+
+    def apply_visibility_filter(self):
+        """Poprawnie ukrywa i przywraca wiersze."""
+        hide_drawn = self.hide_drawn_var.get()
+
+        for card_name, row_frame in self.card_row_widgets.items():
+            info = self.card_states[card_name]
+            is_fully_drawn = info["drawn_qty"] >= info["max_qty"]
+
+            if hide_drawn and is_fully_drawn:
+                row_frame.pack_forget()
+            else:
+                row_frame.pack_forget()
+                row_frame.pack(fill="x", pady=2, side="top")
+
+    def recalculate_probabilities(self):
+        """Przelicza szanse na dociągnięcie kart."""
+        deck_left = self.current_deck_size
+
+        for card_name, info in self.card_states.items():
+            copies_left = info["max_qty"] - info["drawn_qty"]
+
+            if copies_left <= 0 or deck_left <= 0:
+                chance = 0.0
+            else:
+                chance = OddsCalculator.calculate_chance(
+                    deck_size=deck_left,
+                    copies_in_deck=copies_left,
+                    hand_size=1
+                )
+
+            if "lbl_pct" in info:
+                info["lbl_pct"].configure(
+                    text=f"{chance:.1f}%",
+                    text_color="#00FF66" if chance > 0 else "#666666"
+                )
+
+        try:
+            draw_x = max(1, int(self.draw_x_var.get()))
+        except ValueError:
+            draw_x = 1
+
+        if deck_left > 0:
+            draw_x_chance = OddsCalculator.calculate_draw_chance(
+                deck_size=deck_left,
+                outs_left=1,
+                cards_to_draw=draw_x
+            )
+            self.lbl_gen_prob.configure(text=f"({draw_x_chance:.1f}%)")
+        else:
+            self.lbl_gen_prob.configure(text="(0.0%)")
+
+    def _show_card_preview(self, card_name, widget_btn):
+        """Pobiera i przełącza podgląd karty z wykorzystaniem ScryfallAPI."""
+        if self.tooltip.winfo_ismapped() and getattr(self.tooltip, "active_card_name", None) == card_name:
+            self.tooltip.hide()
+            return
+
+        x = widget_btn.winfo_rootx() + widget_btn.winfo_width()
+        y = widget_btn.winfo_rooty()
+
+        self.tooltip.show_image(None, x, y, card_name)
+
+        def _fetch():
+            file_path = ScryfallAPI.get_card_image_path(card_name)
+            self.after(0, lambda: self.tooltip.show_image(file_path, x, y, card_name))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _on_single_card_toggle(self, card_name, var):
+        self.card_states[card_name]["drawn_qty"] = 1 if var.get() else 0
+        self.apply_visibility_filter()
+        self.recalculate_probabilities()
+
+    def _change_card_qty(self, card_name, delta):
+        info = self.card_states[card_name]
+        new_val = max(0, min(info["max_qty"], info["drawn_qty"] + delta))
+        info["drawn_qty"] = new_val
+        if "cnt_var" in info:
+            info["cnt_var"].set(f"{new_val}/{info['max_qty']}")
+
+        self.apply_visibility_filter()
+        self.recalculate_probabilities()
 
     def init_cmdr_damage_ui(self):
         for child in self.cmdr_dropdown_frame.winfo_children():
@@ -245,9 +364,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not self.engine or not hasattr(self.engine, "state"):
             return
 
-        lbl_title = ctk.CTkLabel(
-            self.cmdr_dropdown_frame, text="Commander Damage", font=(FONT_UI, 10, "bold"), text_color="#888888"
-        )
+        lbl_title = ctk.CTkLabel(self.cmdr_dropdown_frame, text="Commander Damage", font=(FONT_UI, 10, "bold"), text_color="#888888")
         lbl_title.pack(pady=(4, 2))
 
         for p_id, opponent in self.engine.state.players.items():
@@ -257,36 +374,16 @@ class PlayerBoardWidget(ctk.CTkFrame):
             row_frame = ctk.CTkFrame(self.cmdr_dropdown_frame, fg_color="transparent")
             row_frame.pack(fill="x", padx=8, pady=3)
 
-            lbl_opp = ctk.CTkLabel(
-                row_frame, text=f"⚔ {opponent.name}", font=(FONT_UI, 11, "bold"), text_color="#FFFFFF", anchor="w"
-            )
+            lbl_opp = ctk.CTkLabel(row_frame, text=f"⚔ {opponent.name}", font=(FONT_UI, 11, "bold"), text_color="#FFFFFF", anchor="w")
             lbl_opp.pack(side="left", expand=True, fill="x")
 
-            btn_minus = ctk.CTkButton(
-                row_frame,
-                text="-",
-                font=(FONT_UI, 11, "bold"),
-                width=22,
-                height=22,
-                fg_color="#2d2d2d",
-                hover_color="#3d3d3d",
-                command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, -1),
-            )
+            btn_minus = ctk.CTkButton(row_frame, text="-", font=(FONT_UI, 11, "bold"), width=22, height=22, fg_color="#2d2d2d", hover_color="#3d3d3d", command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, -1))
             btn_minus.pack(side="left", padx=2)
 
             lbl_dmg = ctk.CTkLabel(row_frame, text="0", font=(FONT_UI, 12, "bold"), text_color="#FFFFFF", width=24)
             lbl_dmg.pack(side="left", padx=2)
 
-            btn_plus = ctk.CTkButton(
-                row_frame,
-                text="+",
-                font=(FONT_UI, 11, "bold"),
-                width=22,
-                height=22,
-                fg_color="#2d2d2d",
-                hover_color="#3d3d3d",
-                command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, 1),
-            )
+            btn_plus = ctk.CTkButton(row_frame, text="+", font=(FONT_UI, 11, "bold"), width=22, height=22, fg_color="#2d2d2d", hover_color="#3d3d3d", command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, 1))
             btn_plus.pack(side="left", padx=2)
 
             self.cmdr_dmg_labels[p_id] = lbl_dmg
@@ -296,43 +393,33 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not p_state:
             return
 
-        # --- AUTOMATYCZNE SPRAWDZANIE WARUNKÓW ŚMIERCI (REGUŁY EDH) ---
+        if not self.card_states and hasattr(p_state, "deck") and p_state.deck:
+            self.load_deck(p_state.deck)
+
         has_zero_hp = p_state.hp <= 0
         has_10_poison = getattr(p_state, "poison", 0) >= 10
         has_21_cmdr_dmg = any(dmg >= 21 for dmg in getattr(p_state, "cmdr_damage_received", {}).values())
 
-        if has_zero_hp or has_10_poison or has_21_cmdr_dmg:
-            p_state.is_alive = False
-        else:
-            p_state.is_alive = True
+        p_state.is_alive = not (has_zero_hp or has_10_poison or has_21_cmdr_dmg)
 
-        # Odświeżenie nazwy gracza
         if hasattr(p_state, "name") and p_state.name:
             self.lbl_name.configure(text=p_state.name)
 
         max_hp = getattr(p_state, "max_hp", DEFAULT_MAX_HP)
-
-        # Życie & Kolorystyka HP
         ratio = p_state.hp / max_hp if max_hp > 0 else 1.0
         hp_color = "#00FF66" if ratio > 0.75 else ("#B4FF00" if ratio > 0.5 else ("#FFB300" if ratio > 0.25 else "#FF3333"))
         self.lbl_hp.configure(text=str(p_state.hp), text_color=hp_color)
 
-        # Poison & Commander Tax
         self.btn_poison.configure(text=f"PSN: {p_state.poison}")
         self.btn_tax.configure(text=f"TAX: {p_state.cmdr_tax}")
 
-        # Obrażenia od Commanderów
         if not self.cmdr_dmg_labels:
             self.init_cmdr_damage_ui()
 
         for opp_id, lbl_dmg in self.cmdr_dmg_labels.items():
             damage_val = p_state.cmdr_damage_received.get(opp_id, 0)
-            lbl_dmg.configure(
-                text=str(damage_val),
-                text_color="#FF4444" if damage_val >= 21 else "#FFFFFF",
-            )
+            lbl_dmg.configure(text=str(damage_val), text_color="#FF4444" if damage_val >= 21 else "#FFFFFF")
 
-        # Status Śmierci / Aktywnej Tury
         current_player = state.get_current_player() if hasattr(state, "get_current_player") else None
 
         if not p_state.is_alive:
@@ -395,3 +482,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.cmdr_dropdown_frame.place(relx=0.5, y=0, anchor="n")
             self.cmdr_dropdown_frame.lift()
             self.is_cmdr_visible = True
+
+    def _on_card_checkbox_toggle(self, card_name):
+        self.recalculate_probabilities()
+        self.apply_visibility_filter()

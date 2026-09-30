@@ -18,14 +18,13 @@ class RoomView(ctk.CTkFrame):
         self.host_deck = (
                 deck_name
                 or self.room_config.get("selected_deck")
-                or self.room_config.get("deck_name")
                 or "Selected Deck"
         )
         self.host_commander = self.room_config.get("commander", "")
         self.game_format = self.room_config.get("format", "Commander / EDH")
-        self.room_name = self.room_config.get("name") or self.room_config.get("room_name", "Test Room")
+        self.room_name = self.room_config.get("name", "Commander Room")
 
-        # --- 1. GÓRNY PASEK ---
+        # --- GÓRNY PASEK ---
         self.top_bar = ctk.CTkFrame(self, fg_color="#1E1E1E", height=50, corner_radius=8)
         self.top_bar.pack(fill="x", padx=15, pady=(15, 10))
 
@@ -37,11 +36,9 @@ class RoomView(ctk.CTkFrame):
         )
         self.room_title.pack(side="left", padx=20, pady=10)
 
-        # Kontener na przyciski po prawej stronie górnego paska
         self.top_buttons_frame = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.top_buttons_frame.pack(side="right", padx=15, pady=9)
 
-        # Przycisk START GAME / READY na górnym pasku
         self.btn_start_top = ctk.CTkButton(
             self.top_buttons_frame,
             text="START GAME",
@@ -53,7 +50,6 @@ class RoomView(ctk.CTkFrame):
         )
         self.btn_start_top.pack(side="left", padx=(0, 10))
 
-        # Przycisk LEAVE ROOM
         self.btn_leave = ctk.CTkButton(
             self.top_buttons_frame,
             text="LEAVE ROOM",
@@ -65,19 +61,20 @@ class RoomView(ctk.CTkFrame):
         )
         self.btn_leave.pack(side="left")
 
-        # --- 2. KONTENER NA SLOTY 2x2 ---
+        # --- KONTENER SLOTÓW 2x2 ---
         self.slots_container = ctk.CTkFrame(self, fg_color="transparent")
         self.slots_container.pack(expand=True, fill="both", padx=15, pady=(0, 15))
 
-        self.slots_container.grid_columnconfigure(0, weight=1)
-        self.slots_container.grid_columnconfigure(1, weight=1)
-        self.slots_container.grid_rowconfigure(0, weight=1)
-        self.slots_container.grid_rowconfigure(1, weight=1)
+        # Wymuszenie identycznej wagi dla kolumn i wierszy
+        self.slots_container.grid_columnconfigure(0, weight=1, uniform="slot_col")
+        self.slots_container.grid_columnconfigure(1, weight=1, uniform="slot_col")
+        self.slots_container.grid_rowconfigure(0, weight=1, uniform="slot_row")
+        self.slots_container.grid_rowconfigure(1, weight=1, uniform="slot_row")
 
         self._build_slots()
 
     def _build_slots(self):
-        # Slot 1: HOST (Ty)
+        # --- SLOT 1: HOST (TY) ---
         self.slot1 = ctk.CTkFrame(
             self.slots_container,
             fg_color="#1A1A1A",
@@ -87,55 +84,59 @@ class RoomView(ctk.CTkFrame):
         )
         self.slot1.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
+        # Odznaka Hosta na samej górze ramki
         lbl_badge = ctk.CTkLabel(
             self.slot1,
             text="👑 HOST (YOU)",
             font=("Segoe UI", 11, "bold"),
             text_color="#A0A0A0"
         )
-        lbl_badge.pack(pady=(12, 2))
+        lbl_badge.pack(pady=(10, 0))
 
-        # Karta wnętrza dla hosta
-        card_inner = ctk.CTkFrame(self.slot1, fg_color="#141414", corner_radius=10)
-        card_inner.pack(expand=True, fill="both", padx=15, pady=(0, 12))
+        # Wyśrodkowany kontener na treść Hosta
+        card_center = ctk.CTkFrame(self.slot1, fg_color="transparent")
+        card_center.pack(expand=True)
 
-        # Avatar Hosta
+        # Avatar
         avatar_path = os.path.join(AVATARS_DIR, self.host_avatar)
         if os.path.exists(avatar_path):
-            img = Image.open(avatar_path)
-            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(90, 90))
-            lbl_avatar = ctk.CTkLabel(card_inner, image=ctk_img, text="")
-            lbl_avatar.pack(expand=True, pady=(10, 2))
+            try:
+                img = Image.open(avatar_path)
+                self.avatar_img = ctk.CTkImage(light_image=img, dark_image=img, size=(90, 90))
+                lbl_avatar = ctk.CTkLabel(card_center, image=self.avatar_img, text="")
+                lbl_avatar.pack(pady=(0, 8))
+            except Exception as e:
+                print(f"[ROOM VIEW] Błąd ładowania avatara: {e}")
 
         # Nick
         lbl_nick = ctk.CTkLabel(
-            card_inner,
+            card_center,
             text=self.host_nick,
             font=("Segoe UI", 18, "bold"),
             text_color="#FFFFFF"
         )
-        lbl_nick.pack(pady=(0, 2))
+        lbl_nick.pack(pady=(0, 4))
 
-        # Deck
+        # Talia
         lbl_deck = ctk.CTkLabel(
-            card_inner,
+            card_center,
             text=f"Deck: {self.host_deck}",
             font=("Segoe UI", 13, "bold"),
             text_color="#00FF66"
         )
         lbl_deck.pack(pady=(0, 2))
 
-        # Commander (jeśli podany)
+        # Commander
         if self.host_commander:
             lbl_cmd = ctk.CTkLabel(
-                card_inner,
+                card_center,
                 text=f"CMD: {self.host_commander}",
                 font=("Segoe UI", 11, "italic"),
                 text_color="#8A9BA8"
             )
-            lbl_cmd.pack(pady=(0, 10))
+            lbl_cmd.pack(pady=(0, 0))
 
-        # Sloty 2, 3, 4 (Waiting for player)
+        # --- SLOTY 2, 3, 4 ---
         max_players = self.room_config.get("max_players", 4)
         positions = [(0, 1), (1, 0), (1, 1)]
 
@@ -149,30 +150,34 @@ class RoomView(ctk.CTkFrame):
             )
             slot.grid(row=r, column=c, sticky="nsew", padx=8, pady=8)
 
+            # Wyśrodkowany kontener treści dla pozostałych slotów
+            slot_center = ctk.CTkFrame(slot, fg_color="transparent")
+            slot_center.pack(expand=True)
+
             if idx <= max_players:
                 lbl_slot_num = ctk.CTkLabel(
-                    slot,
+                    slot_center,
                     text=f"Slot {idx}",
-                    font=("Segoe UI", 13, "bold"),
+                    font=("Segoe UI", 14, "bold"),
                     text_color="#555555"
                 )
-                lbl_slot_num.pack(expand=True, pady=(20, 0))
+                lbl_slot_num.pack(pady=(0, 4))
 
                 lbl_wait = ctk.CTkLabel(
-                    slot,
+                    slot_center,
                     text="Waiting for player...",
                     font=("Segoe UI", 12),
                     text_color="#444444"
                 )
-                lbl_wait.pack(expand=True, pady=(0, 20))
+                lbl_wait.pack()
             else:
                 lbl_closed = ctk.CTkLabel(
-                    slot,
+                    slot_center,
                     text="LOCKED",
                     font=("Segoe UI", 12, "bold"),
                     text_color="#333333"
                 )
-                lbl_closed.pack(expand=True)
+                lbl_closed.pack()
 
     def start_match(self):
         if hasattr(self.master, "launch_game_overlay"):

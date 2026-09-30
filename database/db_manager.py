@@ -1,3 +1,4 @@
+# database/db_manager.py
 import os
 import sqlite3
 import json
@@ -22,31 +23,47 @@ class DBManager:
         conn = sqlite3.connect(DBManager.DB_PATH)
         cursor = conn.cursor()
 
+        # Tworzenie bazowej tabeli jeśli nie istnieje
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS decks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 deck_name TEXT UNIQUE NOT NULL,
-                cards_json TEXT NOT NULL
+                cards_json TEXT NOT NULL,
+                game_format TEXT DEFAULT 'Commander / EDH',
+                commander TEXT DEFAULT ''
             )
         """)
+
+        # Migracja bazy – dodanie kolumn game_format i commander dla istniejącej bazy
+        cursor.execute("PRAGMA table_info(decks)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "game_format" not in columns:
+            cursor.execute("ALTER TABLE decks ADD COLUMN game_format TEXT DEFAULT 'Commander / EDH'")
+        if "commander" not in columns:
+            cursor.execute("ALTER TABLE decks ADD COLUMN commander TEXT DEFAULT ''")
 
         conn.commit()
         conn.close()
 
     @staticmethod
-    def save_deck(deck_name: str, cards: dict) -> None:
+    def save_deck(deck_name: str, cards: dict, game_format: str = "Commander / EDH", commander: str = "") -> None:
         """Saves a new deck or updates an existing one."""
-        DBManager._ensure_data_dir_exists()
+        DBManager.init_db()  # Upewnia się, że struktura jest aktualna
 
         cards_json = json.dumps(cards)
         conn = sqlite3.connect(DBManager.DB_PATH)
         cursor = conn.cursor()
 
-        # If name already exists -> replace
+        # Zapis lub nadpisanie (UPSERT)
         cursor.execute("""
-            INSERT OR REPLACE INTO decks (deck_name, cards_json)
-            VALUES (?, ?)
-        """, (deck_name, cards_json))
+            INSERT INTO decks (deck_name, cards_json, game_format, commander)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(deck_name) DO UPDATE SET
+                cards_json = excluded.cards_json,
+                game_format = excluded.game_format,
+                commander = excluded.commander
+        """, (deck_name, cards_json, game_format, commander))
 
         conn.commit()
         conn.close()
@@ -64,12 +81,11 @@ class DBManager:
         rows = cursor.fetchall()
         conn.close()
 
-        # fetchall() zwraca krotki [('Gimli Deck',), ('Krenko Deck',)] -> zamieniamy na prostą listę
         return [row[0] for row in rows]
 
     @staticmethod
     def get_deck_cards(deck_name: str) -> dict:
-        """Retrieves the card dictionary for a specific deck name."""
+        """Retrieves the card dictionary {card_name: qty} for a specific deck name."""
         if not os.path.exists(DBManager.DB_PATH):
             return {}
 
@@ -84,25 +100,50 @@ class DBManager:
             return json.loads(row[0])
         return {}
 
+    @staticmethod
+    def get_cards_for_deck(deck_name: str) -> list[str]:
+        """Returns a sorted list of card names for GUI drop-down menus."""
+        cards_dict = DBManager.get_deck_cards(deck_name)
+        return sorted(list(cards_dict.keys()))
+
+    @staticmethod
+    def get_deck_by_name(deck_name: str) -> dict:
+        """Retrieves complete deck data including cards, format, and commander."""
+        if not os.path.exists(DBManager.DB_PATH):
+            return {}
+
+        conn = sqlite3.connect(DBManager.DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT deck_name, cards_json, game_format, commander FROM decks WHERE deck_name = ?", (deck_name,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return {
+                "name": row[0],
+                "cards": json.loads(row[1]),
+                "format": row[2] or "Commander / EDH",
+                "commander": row[3] or ""
+            }
+        return {}
+
+
 if __name__ == "__main__":
-    # 1. Inicjalizacja bazy i folderu
+    # 1. Inicjalizacja bazy
     DBManager.init_db()
 
-    # 2. Testowy słownik talii z Archidekta
+    # 2. Testowy słownik talii
     sample_cards = {
+        "Krenko, Mob Boss": 1,
         "Sol Ring": 1,
-        "Command Tower": 1,
-        "Forest": 30
+        "Mountain": 38
     }
 
-    # 3. Zapis talii
-    DBManager.save_deck("Krenko Test Deck", sample_cards)
+    # 3. Zapis talii z formatem i dowódcą
+    DBManager.save_deck("Krenko Test Deck", sample_cards, "Commander / EDH", "Krenko, Mob Boss")
     print("Zapisano talię!")
 
-    # 4. Pobranie listy zapisanych talii
-    saved_decks = DBManager.get_all_deck_names()
-    print("Zapisane talie w bazie:", saved_decks)
-
-    # 5. Odczyt konkretnej talii
-    loaded_cards = DBManager.get_deck_cards("Krenko Test Deck")
-    print("Zawartość wczytanej talii:", loaded_cards)
+    # 4. Odczyt pełnych danych talii
+    deck_info = DBManager.get_deck_by_name("Krenko Test Deck")
+    print("Wczytana talia z bazy:", deck_info)
