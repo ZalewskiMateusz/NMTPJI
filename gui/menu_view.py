@@ -121,7 +121,10 @@ class MenuView(ctk.CTkFrame):
 
     def join_room_action(self):
         def proceed():
-            print("Click: Join Room")
+            if hasattr(self.master, "show_join_room"):
+                self.master.show_join_room()
+            else:
+                print("Click: Join Room (no show_join_room in master)")
 
         self._ensure_profile_or_open_dialog(proceed)
 

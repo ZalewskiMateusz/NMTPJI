@@ -1,11 +1,14 @@
 import os
 import threading
+import time
+import cv2
 import customtkinter as ctk
 from PIL import Image
 
 from core.calculator import OddsCalculator
 from core.scryfall import ScryfallAPI
 from database.db_manager import DBManager
+from gui.components.stream_dialog import StreamSourceDialog
 
 FONT_HEADER = "Georgia"
 FONT_UI = "Segoe UI"
@@ -20,10 +23,10 @@ class CardHoverTooltip(ctk.CTkToplevel):
         self.configure(fg_color="#1E1E1E")
         self.withdraw()
 
-        self.lbl_image = ctk.CTkLabel(self, text="Pobieranie...")
+        self.lbl_image = ctk.CTkLabel(self, text="Loading...")
         self.lbl_image.pack(padx=4, pady=4)
         self.active_card_name = None
-        self._current_img = None  # Wskaźnik na obrazek (ochrona przed Garbage Collector)
+        self._current_img = None
 
     def show_image(self, img_path, x, y, card_name):
         self.active_card_name = card_name
@@ -34,12 +37,11 @@ class CardHoverTooltip(ctk.CTkToplevel):
                 self.lbl_image.configure(image=self._current_img, text="")
             except Exception:
                 self._current_img = None
-                self.lbl_image.configure(image="", text="Błąd obrazu")
+                self.lbl_image.configure(image="", text="Image Error")
         else:
             self._current_img = None
-            self.lbl_image.configure(image="", text="Brak obrazu")
+            self.lbl_image.configure(image="", text="No Image Available")
 
-        # Ustawienie pozycji okna po prawej stronie przycisku
         self.geometry(f"+{x + 25}+{y - 100}")
         self.deiconify()
         self.lift()
@@ -51,7 +53,8 @@ class CardHoverTooltip(ctk.CTkToplevel):
 
 
 class PlayerBoardWidget(ctk.CTkFrame):
-    def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, deck_cards=None, **kwargs):
+    def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, deck_cards=None, client=None,
+                 is_local=False, **kwargs):
         self.border_inactive = "#2a2a2a"
         self.border_active = "#00FF66"
 
@@ -67,13 +70,15 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.player_id = player_id
         self.player_name = player_name
         self.engine = engine
+        self.client = client
+        self.is_local = is_local
 
         self.is_stats_visible = False
         self.is_cmdr_visible = False
 
         self.cmdr_dmg_labels = {}
         self.card_states = {}
-        self.card_row_widgets = {}  # Zachowuje wskaźniki do wierszy UI
+        self.card_row_widgets = {}
 
         self.hide_drawn_var = ctk.BooleanVar(value=False)
         self.draw_x_var = ctk.StringVar(value="1")
@@ -101,49 +106,135 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.center_stats_container.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.btn_tax = ctk.CTkButton(self.center_stats_container, text="TAX: 0", font=(FONT_UI, 11, "bold"), width=52, height=26, fg_color="#252525", hover_color="#333333")
+        self.btn_tax = ctk.CTkButton(self.center_stats_container, text="TAX: 0", font=(FONT_UI, 11, "bold"), width=52,
+                                     height=26, fg_color="#252525", hover_color="#333333")
         self.btn_tax.pack(side="left", padx=(0, 6))
         self.btn_tax.bind("<Button-1>", lambda e: self.change_tax(2))
         self.btn_tax.bind("<Button-3>", lambda e: self.change_tax(-2))
 
-        self.btn_minus_5_hp = ctk.CTkButton(self.center_stats_container, text="-5", font=(FONT_UI, 11, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(-5))
+        self.btn_minus_5_hp = ctk.CTkButton(self.center_stats_container, text="-5", font=(FONT_UI, 11, "bold"),
+                                            width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a",
+                                            command=lambda: self.change_hp(-5))
         self.btn_minus_5_hp.pack(side="left", padx=1)
 
-        self.btn_minus_hp = ctk.CTkButton(self.center_stats_container, text="−", font=(FONT_UI, 16, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(-1))
+        self.btn_minus_hp = ctk.CTkButton(self.center_stats_container, text="−", font=(FONT_UI, 16, "bold"), width=28,
+                                          height=28, fg_color="#2a2a2a", hover_color="#3a3a3a",
+                                          command=lambda: self.change_hp(-1))
         self.btn_minus_hp.pack(side="left", padx=1)
 
-        self.lbl_hp = ctk.CTkLabel(self.center_stats_container, text=str(DEFAULT_MAX_HP), font=(FONT_HEADER, 22, "bold"), text_color="#00FF66", width=46)
+        self.lbl_hp = ctk.CTkLabel(self.center_stats_container, text=str(DEFAULT_MAX_HP),
+                                   font=(FONT_HEADER, 22, "bold"), text_color="#00FF66", width=46)
         self.lbl_hp.pack(side="left", padx=2)
 
-        self.btn_plus_hp = ctk.CTkButton(self.center_stats_container, text="+", font=(FONT_UI, 16, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(1))
+        self.btn_plus_hp = ctk.CTkButton(self.center_stats_container, text="+", font=(FONT_UI, 16, "bold"), width=28,
+                                         height=28, fg_color="#2a2a2a", hover_color="#3a3a3a",
+                                         command=lambda: self.change_hp(1))
         self.btn_plus_hp.pack(side="left", padx=1)
 
-        self.btn_plus_5_hp = ctk.CTkButton(self.center_stats_container, text="+5", font=(FONT_UI, 11, "bold"), width=28, height=28, fg_color="#2a2a2a", hover_color="#3a3a3a", command=lambda: self.change_hp(5))
+        self.btn_plus_5_hp = ctk.CTkButton(self.center_stats_container, text="+5", font=(FONT_UI, 11, "bold"), width=28,
+                                           height=28, fg_color="#2a2a2a", hover_color="#3a3a3a",
+                                           command=lambda: self.change_hp(5))
         self.btn_plus_5_hp.pack(side="left", padx=1)
 
-        self.btn_cmdr_damage = ctk.CTkButton(self.center_stats_container, text="⚔", font=(FONT_UI, 12, "bold"), width=30, height=26, fg_color="#252525", hover_color="#333333", command=self.toggle_cmdr_panel)
+        self.btn_cmdr_damage = ctk.CTkButton(self.center_stats_container, text="⚔", font=(FONT_UI, 12, "bold"),
+                                             width=30, height=26, fg_color="#252525", hover_color="#333333",
+                                             command=self.toggle_cmdr_panel)
         self.btn_cmdr_damage.pack(side="left", padx=(6, 6))
 
-        self.btn_poison = ctk.CTkButton(self.center_stats_container, text="PSN: 0", font=(FONT_UI, 11, "bold"), width=52, height=26, fg_color="#252525", hover_color="#333333")
+        self.btn_poison = ctk.CTkButton(self.center_stats_container, text="PSN: 0", font=(FONT_UI, 11, "bold"),
+                                        width=52, height=26, fg_color="#252525", hover_color="#333333")
         self.btn_poison.pack(side="left", padx=(0, 0))
         self.btn_poison.bind("<Button-1>", lambda e: self.change_poison(1))
         self.btn_poison.bind("<Button-3>", lambda e: self.change_poison(-1))
 
-        self.center_area = ctk.CTkFrame(self.main_board, fg_color="transparent")
+        # --- MAIN VIDEO AREA ---
+        self.center_area = ctk.CTkFrame(self.main_board, fg_color="#0A0A0A", corner_radius=8)
         self.center_area.pack(fill="both", expand=True)
 
-        self.btn_stats = ctk.CTkButton(self.center_area, text="STATS", font=(FONT_UI, 10, "bold"), width=48, height=22, fg_color="#252525", hover_color="#333333", command=self.toggle_stats_panel)
-        self.btn_stats.place(x=4, y=4)
+        self.lbl_video_frame = ctk.CTkLabel(self.center_area, text="", fg_color="transparent")
+        self.lbl_video_frame.pack(fill="both", expand=True)
 
-        self.cmdr_dropdown_frame = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333", corner_radius=8, width=200)
+        # Right-click anywhere in video area to switch sources on the fly
+        self.center_area.bind("<Button-3>", lambda e: self._select_stream_source())
+        self.lbl_video_frame.bind("<Button-3>", lambda e: self._select_stream_source())
+
+        self.btn_connect_stream = ctk.CTkButton(
+            self.center_area,
+            text="🎥 SHARE / CONNECT TABLE",
+            font=(FONT_UI, 11, "bold"),
+            fg_color="#1E1E1E",
+            border_color="#00FF66",
+            border_width=1,
+            hover_color="#2A2A2A",
+            text_color="#00FF66",
+            command=self._select_stream_source
+        )
+        self.btn_connect_stream.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.btn_stats = ctk.CTkButton(self.center_area, text="STATS", font=(FONT_UI, 10, "bold"), width=48, height=22,
+                                       fg_color="#252525", hover_color="#333333", command=self.toggle_stats_panel)
+        self.btn_stats.place(x=6, y=6)
+
+        self.cmdr_dropdown_frame = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1,
+                                                border_color="#333333", corner_radius=8, width=200)
 
         self._setup_stats_panel_ui()
         self.load_deck(deck_cards or {})
 
-    def _setup_stats_panel_ui(self):
-        self.stats_panel = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333", corner_radius=8, width=280)
+    def _select_stream_source(self):
+        StreamSourceDialog(self, on_select_callback=self.start_capturing_camera)
 
-        lbl_stats_title = ctk.CTkLabel(self.stats_panel, text="Deck Stats & Probability", font=(FONT_HEADER, 11, "bold"), text_color="#FFFFFF")
+    def start_capturing_camera(self, camera_index):
+        print(f"[STREAM] Starting video device index: {camera_index}")
+        self.is_capturing = False
+        self.after(200, lambda: self._init_capture_thread(camera_index))
+
+    def _init_capture_thread(self, camera_index):
+        self.is_capturing = True
+        threading.Thread(target=self._capture_loop, args=(camera_index,), daemon=True).start()
+
+    def _capture_loop(self, camera_index):
+        cap = cv2.VideoCapture(camera_index, cv2.CAP_MSMF)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+        while getattr(self, "is_capturing", True):
+            try:
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.1)
+                    continue
+
+                cv_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(cv_img)
+
+                w = max(150, self.center_area.winfo_width())
+                h = max(100, self.center_area.winfo_height())
+                pil_img = pil_img.resize((w, h), Image.Resampling.LANCZOS)
+
+                ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(w, h))
+                self.after(0, lambda img=ctk_img: self.update_video_frame(img))
+
+            except Exception as e:
+                print(f"[STREAM ERROR] {e}")
+                break
+
+            time.sleep(0.033)
+
+        cap.release()
+
+    def update_video_frame(self, ctk_image):
+        if self.btn_connect_stream.winfo_ismapped():
+            self.btn_connect_stream.place_forget()
+        self.lbl_video_frame.configure(image=ctk_image)
+        self.lbl_video_frame.image = ctk_image
+
+    def _setup_stats_panel_ui(self):
+        self.stats_panel = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333",
+                                        corner_radius=8, width=280)
+
+        lbl_stats_title = ctk.CTkLabel(self.stats_panel, text="Deck Stats & Probability",
+                                       font=(FONT_HEADER, 11, "bold"), text_color="#FFFFFF")
         lbl_stats_title.pack(pady=(6, 2))
 
         filter_bar = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
@@ -152,7 +243,8 @@ class PlayerBoardWidget(ctk.CTkFrame):
         lbl_draw = ctk.CTkLabel(filter_bar, text="Draw X:", font=(FONT_UI, 9), text_color="#AAAAAA")
         lbl_draw.pack(side="left", padx=(2, 2))
 
-        entry_draw = ctk.CTkEntry(filter_bar, textvariable=self.draw_x_var, width=32, height=20, font=(FONT_UI, 9), justify="center")
+        entry_draw = ctk.CTkEntry(filter_bar, textvariable=self.draw_x_var, width=32, height=20, font=(FONT_UI, 9),
+                                  justify="center")
         entry_draw.pack(side="left", padx=(0, 2))
         entry_draw.bind("<KeyRelease>", lambda e: self.recalculate_probabilities())
 
@@ -208,7 +300,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
     @property
     def current_deck_size(self) -> int:
-        """Zwraca realną liczbę kart pozostałych W TALII."""
         total_remaining = 0
         for info in self.card_states.values():
             left = info["max_qty"] - info["drawn_qty"]
@@ -216,7 +307,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
         return total_remaining
 
     def build_deck_stats_ui(self):
-        """Buduje strukturę UI tylko raz przy ładowaniu talii."""
         if not hasattr(self, "card_scroll_frame"):
             return
 
@@ -225,7 +315,8 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.card_row_widgets.clear()
 
         if not self.card_states:
-            lbl_empty = ctk.CTkLabel(self.card_scroll_frame, text="Brak kart w talii", font=(FONT_UI, 11, "italic"), text_color="#666666")
+            lbl_empty = ctk.CTkLabel(self.card_scroll_frame, text="No cards in deck", font=(FONT_UI, 11, "italic"),
+                                     text_color="#666666")
             lbl_empty.pack(pady=20)
             return
 
@@ -240,23 +331,25 @@ class PlayerBoardWidget(ctk.CTkFrame):
             if max_qty == 1:
                 chk_var = ctk.BooleanVar(value=(drawn_qty > 0))
                 chk = ctk.CTkCheckBox(
-                    row, text="", width=18, height=18, checkbox_width=15, checkbox_height=15, border_width=1, corner_radius=3, variable=chk_var,
+                    row, text="", width=18, height=18, checkbox_width=15, checkbox_height=15, border_width=1,
+                    corner_radius=3, variable=chk_var,
                     command=lambda name=card_name, var=chk_var: self._on_single_card_toggle(name, var)
                 )
                 chk.pack(side="left", padx=(2, 2))
             else:
                 cnt_var = ctk.StringVar(value=f"{drawn_qty}/{max_qty}")
-                btn_m = ctk.CTkButton(row, text="-", width=14, height=14, font=(FONT_UI, 8), command=lambda n=card_name: self._change_card_qty(n, -1))
+                btn_m = ctk.CTkButton(row, text="-", width=14, height=14, font=(FONT_UI, 8),
+                                      command=lambda n=card_name: self._change_card_qty(n, -1))
                 btn_m.pack(side="left", padx=1)
 
                 lbl_c = ctk.CTkLabel(row, textvariable=cnt_var, font=(FONT_UI, 9), width=20)
                 lbl_c.pack(side="left")
 
-                btn_p = ctk.CTkButton(row, text="+", width=14, height=14, font=(FONT_UI, 8), command=lambda n=card_name: self._change_card_qty(n, 1))
+                btn_p = ctk.CTkButton(row, text="+", width=14, height=14, font=(FONT_UI, 8),
+                                      command=lambda n=card_name: self._change_card_qty(n, 1))
                 btn_p.pack(side="left", padx=1)
                 info["cnt_var"] = cnt_var
 
-            # Prawidłowe przekazanie btn_eye do lambda komendy
             btn_eye = ctk.CTkButton(
                 row, text="👁", width=18, height=18, font=(FONT_UI, 9), fg_color="#252525", hover_color="#3a3a3a"
             )
@@ -266,7 +359,8 @@ class PlayerBoardWidget(ctk.CTkFrame):
             lbl_name = ctk.CTkLabel(row, text=card_name, font=(FONT_UI, 10), text_color="#DDDDDD", anchor="w")
             lbl_name.pack(side="left", expand=True, fill="x")
 
-            lbl_pct = ctk.CTkLabel(row, text="0.0%", font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=42, anchor="e")
+            lbl_pct = ctk.CTkLabel(row, text="0.0%", font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=42,
+                                   anchor="e")
             lbl_pct.pack(side="right", padx=(2, 2))
             info["lbl_pct"] = lbl_pct
 
@@ -274,9 +368,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.recalculate_probabilities()
 
     def apply_visibility_filter(self):
-        """Poprawnie ukrywa i przywraca wiersze."""
         hide_drawn = self.hide_drawn_var.get()
-
         for card_name, row_frame in self.card_row_widgets.items():
             info = self.card_states[card_name]
             is_fully_drawn = info["drawn_qty"] >= info["max_qty"]
@@ -288,26 +380,14 @@ class PlayerBoardWidget(ctk.CTkFrame):
                 row_frame.pack(fill="x", pady=2, side="top")
 
     def recalculate_probabilities(self):
-        """Przelicza szanse na dociągnięcie kart."""
         deck_left = self.current_deck_size
-
         for card_name, info in self.card_states.items():
             copies_left = info["max_qty"] - info["drawn_qty"]
-
-            if copies_left <= 0 or deck_left <= 0:
-                chance = 0.0
-            else:
-                chance = OddsCalculator.calculate_chance(
-                    deck_size=deck_left,
-                    copies_in_deck=copies_left,
-                    hand_size=1
-                )
-
+            chance = 0.0 if copies_left <= 0 or deck_left <= 0 else OddsCalculator.calculate_chance(deck_size=deck_left,
+                                                                                                    copies_in_deck=copies_left,
+                                                                                                    hand_size=1)
             if "lbl_pct" in info:
-                info["lbl_pct"].configure(
-                    text=f"{chance:.1f}%",
-                    text_color="#00FF66" if chance > 0 else "#666666"
-                )
+                info["lbl_pct"].configure(text=f"{chance:.1f}%", text_color="#00FF66" if chance > 0 else "#666666")
 
         try:
             draw_x = max(1, int(self.draw_x_var.get()))
@@ -315,24 +395,18 @@ class PlayerBoardWidget(ctk.CTkFrame):
             draw_x = 1
 
         if deck_left > 0:
-            draw_x_chance = OddsCalculator.calculate_draw_chance(
-                deck_size=deck_left,
-                outs_left=1,
-                cards_to_draw=draw_x
-            )
+            draw_x_chance = OddsCalculator.calculate_draw_chance(deck_size=deck_left, outs_left=1, cards_to_draw=draw_x)
             self.lbl_gen_prob.configure(text=f"({draw_x_chance:.1f}%)")
         else:
             self.lbl_gen_prob.configure(text="(0.0%)")
 
     def _show_card_preview(self, card_name, widget_btn):
-        """Pobiera i przełącza podgląd karty z wykorzystaniem ScryfallAPI."""
         if self.tooltip.winfo_ismapped() and getattr(self.tooltip, "active_card_name", None) == card_name:
             self.tooltip.hide()
             return
 
         x = widget_btn.winfo_rootx() + widget_btn.winfo_width()
         y = widget_btn.winfo_rooty()
-
         self.tooltip.show_image(None, x, y, card_name)
 
         def _fetch():
@@ -342,9 +416,14 @@ class PlayerBoardWidget(ctk.CTkFrame):
         threading.Thread(target=_fetch, daemon=True).start()
 
     def _on_single_card_toggle(self, card_name, var):
-        self.card_states[card_name]["drawn_qty"] = 1 if var.get() else 0
+        val = 1 if var.get() else 0
+        self.card_states[card_name]["drawn_qty"] = val
         self.apply_visibility_filter()
         self.recalculate_probabilities()
+
+        if self.client and self.is_local:
+            self.client.send_action("TOGGLE_CARD",
+                                    {"player_id": self.player_id, "card_name": card_name, "drawn_qty": val})
 
     def _change_card_qty(self, card_name, delta):
         info = self.card_states[card_name]
@@ -356,6 +435,18 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.apply_visibility_filter()
         self.recalculate_probabilities()
 
+        if self.client and self.is_local:
+            self.client.send_action("TOGGLE_CARD",
+                                    {"player_id": self.player_id, "card_name": card_name, "drawn_qty": new_val})
+
+    def sync_card_state_from_network(self, card_name, drawn_qty):
+        if card_name in self.card_states:
+            self.card_states[card_name]["drawn_qty"] = drawn_qty
+            if "cnt_var" in self.card_states[card_name]:
+                self.card_states[card_name]["cnt_var"].set(f"{drawn_qty}/{self.card_states[card_name]['max_qty']}")
+            self.apply_visibility_filter()
+            self.recalculate_probabilities()
+
     def init_cmdr_damage_ui(self):
         for child in self.cmdr_dropdown_frame.winfo_children():
             child.destroy()
@@ -364,7 +455,8 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not self.engine or not hasattr(self.engine, "state"):
             return
 
-        lbl_title = ctk.CTkLabel(self.cmdr_dropdown_frame, text="Commander Damage", font=(FONT_UI, 10, "bold"), text_color="#888888")
+        lbl_title = ctk.CTkLabel(self.cmdr_dropdown_frame, text="Commander Damage", font=(FONT_UI, 10, "bold"),
+                                 text_color="#888888")
         lbl_title.pack(pady=(4, 2))
 
         for p_id, opponent in self.engine.state.players.items():
@@ -374,16 +466,21 @@ class PlayerBoardWidget(ctk.CTkFrame):
             row_frame = ctk.CTkFrame(self.cmdr_dropdown_frame, fg_color="transparent")
             row_frame.pack(fill="x", padx=8, pady=3)
 
-            lbl_opp = ctk.CTkLabel(row_frame, text=f"⚔ {opponent.name}", font=(FONT_UI, 11, "bold"), text_color="#FFFFFF", anchor="w")
+            lbl_opp = ctk.CTkLabel(row_frame, text=f"⚔ {opponent.name}", font=(FONT_UI, 11, "bold"),
+                                   text_color="#FFFFFF", anchor="w")
             lbl_opp.pack(side="left", expand=True, fill="x")
 
-            btn_minus = ctk.CTkButton(row_frame, text="-", font=(FONT_UI, 11, "bold"), width=22, height=22, fg_color="#2d2d2d", hover_color="#3d3d3d", command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, -1))
+            btn_minus = ctk.CTkButton(row_frame, text="-", font=(FONT_UI, 11, "bold"), width=22, height=22,
+                                      fg_color="#2d2d2d", hover_color="#3d3d3d",
+                                      command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, -1))
             btn_minus.pack(side="left", padx=2)
 
             lbl_dmg = ctk.CTkLabel(row_frame, text="0", font=(FONT_UI, 12, "bold"), text_color="#FFFFFF", width=24)
             lbl_dmg.pack(side="left", padx=2)
 
-            btn_plus = ctk.CTkButton(row_frame, text="+", font=(FONT_UI, 11, "bold"), width=22, height=22, fg_color="#2d2d2d", hover_color="#3d3d3d", command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, 1))
+            btn_plus = ctk.CTkButton(row_frame, text="+", font=(FONT_UI, 11, "bold"), width=22, height=22,
+                                     fg_color="#2d2d2d", hover_color="#3d3d3d",
+                                     command=lambda opp_id=p_id: self.change_cmdr_damage(opp_id, 1))
             btn_plus.pack(side="left", padx=2)
 
             self.cmdr_dmg_labels[p_id] = lbl_dmg
@@ -407,7 +504,8 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
         max_hp = getattr(p_state, "max_hp", DEFAULT_MAX_HP)
         ratio = p_state.hp / max_hp if max_hp > 0 else 1.0
-        hp_color = "#00FF66" if ratio > 0.75 else ("#B4FF00" if ratio > 0.5 else ("#FFB300" if ratio > 0.25 else "#FF3333"))
+        hp_color = "#00FF66" if ratio > 0.75 else (
+            "#B4FF00" if ratio > 0.5 else ("#FFB300" if ratio > 0.25 else "#FF3333"))
         self.lbl_hp.configure(text=str(p_state.hp), text_color=hp_color)
 
         self.btn_poison.configure(text=f"PSN: {p_state.poison}")
@@ -432,33 +530,39 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.lbl_status.configure(text="WAITING", text_color="#666666")
             self.configure(border_color=self.border_inactive)
 
-    def _refresh_and_notify(self):
+    def _refresh_and_notify(self, action_name=None, payload=None):
         if self.engine:
             self.engine.notify_subscribers()
+
+        if self.client and self.is_local and action_name and payload:
+            self.client.send_action(action_name, payload)
 
     def change_hp(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
             p_state.update_hp(delta)
-            self._refresh_and_notify()
+            self._refresh_and_notify("UPDATE_HP", {"player_id": self.player_id, "hp": p_state.hp})
 
     def change_poison(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
             p_state.update_poison(delta)
-            self._refresh_and_notify()
+            self._refresh_and_notify("UPDATE_POISON", {"player_id": self.player_id, "poison": p_state.poison})
 
     def change_tax(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
             p_state.update_tax(delta)
-            self._refresh_and_notify()
+            self._refresh_and_notify("UPDATE_TAX", {"player_id": self.player_id, "tax": p_state.cmdr_tax})
 
     def change_cmdr_damage(self, opponent_id: str, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
             p_state.receive_cmdr_damage(opponent_id, delta)
-            self._refresh_and_notify()
+            self._refresh_and_notify("UPDATE_CMDR_DMG", {
+                "player_id": self.player_id,
+                "cmdr_damage": p_state.cmdr_damage_received
+            })
 
     def toggle_stats_panel(self):
         if self.is_stats_visible:
@@ -467,7 +571,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         else:
             if self.is_cmdr_visible:
                 self.toggle_cmdr_panel()
-            self.stats_panel.place(x=4, y=30)
+            self.stats_panel.place(x=6, y=32)
             self.stats_panel.lift()
             self.btn_stats.lift()
             self.is_stats_visible = True
@@ -482,7 +586,3 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.cmdr_dropdown_frame.place(relx=0.5, y=0, anchor="n")
             self.cmdr_dropdown_frame.lift()
             self.is_cmdr_visible = True
-
-    def _on_card_checkbox_toggle(self, card_name):
-        self.recalculate_probabilities()
-        self.apply_visibility_filter()

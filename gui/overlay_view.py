@@ -1,6 +1,8 @@
 import customtkinter as ctk
 from gui.components.game_header_widget import GameHeaderWidget
 from gui.components.player_board_widget import PlayerBoardWidget
+from gui.end_match_window import EndMatchWindow
+from utils.profile_manager import ProfileManager
 
 
 class DummyPlayerState:
@@ -15,7 +17,7 @@ class DummyPlayerState:
         self.cmdr_damage_received = {}
 
     def update_hp(self, delta):
-        self.hp += delta
+        self.hp = max(0, self.hp + delta)
 
     def update_poison(self, delta):
         self.poison = max(0, self.poison + delta)
@@ -36,7 +38,7 @@ class DummyGameState:
 
     def get_current_player(self):
         player_ids = list(self.players.keys())
-        if player_ids:
+        if player_ids and self.active_player_index < len(player_ids):
             return self.players[player_ids[self.active_player_index]]
         return None
 
@@ -54,10 +56,8 @@ class DummyEngine:
             callback(self.state)
 
     def next_turn(self):
-        # 1. Filtrujemy tylko żywych graczy
         alive_players = [p for p in self.state.players.values() if getattr(p, "is_alive", True)]
 
-        # Jeśli nikt lub tylko 1 osoba żyje, nie przełączamy tury
         if len(alive_players) <= 1:
             self.notify_subscribers()
             return
@@ -65,7 +65,6 @@ class DummyEngine:
         player_ids = list(self.state.players.keys())
         num_players = len(player_ids)
 
-        # 2. Szukamy następnego ŻYWEGO gracza
         for _ in range(num_players):
             self.state.active_player_index = (self.state.active_player_index + 1) % num_players
             current_id = player_ids[self.state.active_player_index]
@@ -74,7 +73,6 @@ class DummyEngine:
             if getattr(current_player, "is_alive", True):
                 break
 
-        # 3. Zwiększamy numer tury i odświeżamy UI
         self.state.turn_number += 1
         self.notify_subscribers()
 
@@ -84,11 +82,16 @@ class OverlayView(ctk.CTkFrame):
         super().__init__(master, fg_color="#121212")
         self.room_config = room_config or {}
 
+        # Pobieramy klienta sieciowego z room_config i podpinamy nasłuch akcji gry
+        self.client = self.room_config.get("client")
+        if self.client:
+            self.client.on_message_received = self._on_network_message
+
         # 1. Górny pasek z akcjami
         self.top_bar = ctk.CTkFrame(self, fg_color="#1E1E1E", height=45)
         self.top_bar.pack(fill="x", padx=10, pady=(10, 5))
 
-        # Przycisk NEXT TURN obok EXIT MATCH
+        # --- PRZYCISKI PO PRAWEJ STRONIE ---
         self.btn_next_turn = ctk.CTkButton(
             self.top_bar,
             text="NEXT TURN ➔",
@@ -100,24 +103,24 @@ class OverlayView(ctk.CTkFrame):
         )
         self.btn_next_turn.pack(side="right", padx=(0, 10), pady=8)
 
-        self.btn_exit = ctk.CTkButton(
+        self.btn_end_match = ctk.CTkButton(
             self.top_bar,
-            text="EXIT MATCH",
+            text="END MATCH",
             font=("Segoe UI", 11, "bold"),
-            fg_color="#2B2B2B",
-            hover_color="#5A1E1E",
+            fg_color="#A51F1F",
+            hover_color="#701414",
             height=30,
-            command=self.exit_match,
+            command=self.open_end_match_modal,
         )
-        self.btn_exit.pack(side="right", padx=10, pady=8)
+        self.btn_end_match.pack(side="right", padx=10, pady=8)
 
         self.header_widget = GameHeaderWidget(self.top_bar)
         self.header_widget.pack(side="left", fill="x", expand=True, padx=10)
 
-        # 2. Inicjalizacja silnika
+        # 2. Inicjalizacja silnika na podstawie listy graczy z lobby
         self.engine = self._init_engine()
 
-        # 3. Kontener na siatkę graczy 2x2
+        # 3. Kontener na siatkę graczy (grid 2x2)
         self.boards_container = ctk.CTkFrame(self, fg_color="transparent")
         self.boards_container.pack(expand=True, fill="both", padx=10, pady=5)
 
@@ -129,40 +132,60 @@ class OverlayView(ctk.CTkFrame):
 
     def _init_engine(self):
         starting_hp = self.room_config.get("starting_hp", 40)
-        host_name = self.room_config.get("host_name", "Mateusz")
+        players_list = self.room_config.get("players", [])
 
-        players = {
-            "p1": DummyPlayerState("p1", f"{host_name} (YOU)", max_hp=starting_hp),
-            "p2": DummyPlayerState("p2", "Player 2", max_hp=starting_hp),
-            "p3": DummyPlayerState("p3", "Player 3", max_hp=starting_hp),
-            "p4": DummyPlayerState("p4", "Player 4", max_hp=starting_hp),
-        }
-        return DummyEngine(players)
+        players_dict = {}
+
+        if players_list:
+            for idx, p_info in enumerate(players_list):
+                p_id = p_info.get("id", f"p{idx + 1}")
+                p_name = p_info.get("name", f"Player {idx + 1}")
+                players_dict[p_id] = DummyPlayerState(p_id, p_name, max_hp=starting_hp)
+        else:
+            host_name = self.room_config.get("host_name", "Player")
+            players_dict = {
+                "p1": DummyPlayerState("p1", f"{host_name} (YOU)", max_hp=starting_hp),
+                "p2": DummyPlayerState("p2", "Player 2", max_hp=starting_hp),
+                "p3": DummyPlayerState("p3", "Player 3", max_hp=starting_hp),
+                "p4": DummyPlayerState("p4", "Player 4", max_hp=starting_hp),
+            }
+
+        return DummyEngine(players_dict)
 
     def _build_player_grid(self):
-        self.boards_container.grid_columnconfigure(0, weight=1)
-        self.boards_container.grid_columnconfigure(1, weight=1)
-        self.boards_container.grid_rowconfigure(0, weight=1)
-        self.boards_container.grid_rowconfigure(1, weight=1)
+        self.boards_container.grid_columnconfigure(0, weight=1, uniform="board_col")
+        self.boards_container.grid_columnconfigure(1, weight=1, uniform="board_col")
+        self.boards_container.grid_rowconfigure(0, weight=1, uniform="board_row")
+        self.boards_container.grid_rowconfigure(1, weight=1, uniform="board_row")
 
         positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        players_list = self.room_config.get("players", [])
 
-        # --- POBIERANIE TALII Z ROOM_CONFIG ---
-        # Wyciągamy słownik kart ("deck_cards") lub samą nazwę talii ("selected_deck")
-        selected_deck = self.room_config.get("deck_cards") or self.room_config.get("selected_deck")
+        player_decks = {p.get("id"): p.get("deck") for p in players_list if isinstance(p, dict)}
+        fallback_deck = self.room_config.get("deck_cards") or self.room_config.get("selected_deck")
+
+        # Określamy lokalnego gracza na podstawie profilu
+        profile = ProfileManager.load_profile()
+        my_nick = profile.get("nickname", "Player")
 
         for i, (p_id, p_state) in enumerate(self.engine.state.players.items()):
-            row, col = positions[i]
+            if i >= len(positions):
+                break
 
-            # Przekazujemy talię tylko dla Gracza 1 (Hosta/Ciebie)
-            deck_to_pass = selected_deck if p_id == "p1" else None
+            row, col = positions[i]
+            deck_to_pass = player_decks.get(p_id) or (fallback_deck if i == 0 else None)
+
+            # Kafelek jest "nasz", jeśli nazwa gracza pasuje do naszego nicku lub to pierwszy gracz gdy brak sieci
+            is_local_player = (p_state.name.startswith(my_nick) or (i == 0 and not self.client))
 
             board = PlayerBoardWidget(
                 parent=self.boards_container,
                 player_id=p_id,
                 player_name=p_state.name,
                 engine=self.engine,
-                deck_cards=deck_to_pass,  # <--- TUTAJ PRZEKAZUJEMY TALIĘ
+                deck_cards=deck_to_pass,
+                client=self.client,
+                is_local=is_local_player
             )
             board.grid(row=row, column=col, sticky="nsew", padx=5, pady=5)
             self.player_widgets[p_id] = board
@@ -175,6 +198,66 @@ class OverlayView(ctk.CTkFrame):
     def next_turn_action(self):
         if hasattr(self.engine, "next_turn"):
             self.engine.next_turn()
+            if self.client:
+                self.client.send_action("NEXT_TURN", {})
+
+    # --- ODBIERANIE AKCJI Z SIECI ---
+    def _on_network_message(self, message):
+        if message.get("type") != "GAME_ACTION":
+            return
+
+        action = message.get("action")
+        payload = message.get("payload", {})
+        self.after(0, lambda: self._process_game_action(action, payload))
+
+    def _process_game_action(self, action, payload):
+        p_id = payload.get("player_id")
+        p_state = self.engine.state.players.get(p_id) if p_id else None
+
+        if action == "NEXT_TURN":
+            self.engine.next_turn()
+
+        elif action == "UPDATE_HP" and p_state:
+            p_state.hp = payload.get("hp", p_state.hp)
+            self.engine.notify_subscribers()
+
+        elif action == "UPDATE_POISON" and p_state:
+            p_state.poison = payload.get("poison", p_state.poison)
+            self.engine.notify_subscribers()
+
+        elif action == "UPDATE_TAX" and p_state:
+            p_state.cmdr_tax = payload.get("tax", p_state.cmdr_tax)
+            self.engine.notify_subscribers()
+
+        elif action == "UPDATE_CMDR_DMG" and p_state:
+            p_state.cmdr_damage_received = payload.get("cmdr_damage", {})
+            self.engine.notify_subscribers()
+
+        elif action == "TOGGLE_CARD" and p_id in self.player_widgets:
+            card_name = payload.get("card_name")
+            drawn_qty = payload.get("drawn_qty")
+            self.player_widgets[p_id].sync_card_state_from_network(card_name, drawn_qty)
+
+    # --- OBSŁUGA OKNA END MATCH ---
+    def open_end_match_modal(self):
+        EndMatchWindow(
+            parent=self,
+            engine=self.engine,
+            on_confirm=self.handle_match_finished,
+            on_rematch=self.handle_rematch,
+            on_resume=self.handle_resume,
+        )
+
+    def handle_match_finished(self, winner_name: str):
+        print(f"[MATCH FINISHED] Winner: {winner_name}")
+        self.exit_match()
+
+    def handle_rematch(self, winner_name: str):
+        print(f"[REMATCH INITIATED] Previous Winner: {winner_name}")
+        self.exit_match()
+
+    def handle_resume(self):
+        print("[MATCH RESUMED] Returning to active game.")
 
     def exit_match(self):
         if hasattr(self.master, "show_menu"):

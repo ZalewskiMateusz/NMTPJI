@@ -5,16 +5,22 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="b21b42f8-c7ae-4e5d-8932-353968d3829b" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/gui/deck_stats_widget.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/gui/components/stream_dialog.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/gui/end_match_window.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/gui/statistics_view.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/utils/room_code.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/calculator.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/calculator.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/core/scryfall.py" beforeDir="false" afterPath="$PROJECT_DIR$/core/scryfall.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/database/db_manager.py" beforeDir="false" afterPath="$PROJECT_DIR$/database/db_manager.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/app_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/app_window.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/components/player_board_widget.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/components/player_board_widget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/gui/create_room_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/create_room_view.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/gui/new_deck_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/new_deck_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/find_room_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/find_room_view.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/join_room_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/join_room_view.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gui/menu_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/menu_view.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/overlay_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/overlay_view.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/gui/room_view.py" beforeDir="false" afterPath="$PROJECT_DIR$/gui/room_view.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/network/room_server.py" beforeDir="false" afterPath="$PROJECT_DIR$/network/room_server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/network/sync_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/network/sync_client.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

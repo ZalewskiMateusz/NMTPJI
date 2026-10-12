@@ -1,19 +1,24 @@
 # NMTPJI (Magic: The Gathering Commander Overlay & Tracker)
 
-NMTPJI is a desktop tactical HUD and card probability tracker tailored for Magic: The Gathering Commander (EDH) webcam games (e.g., via Discord).
+NMTPJI is a dark-themed desktop tactical HUD, game-state tracker, and analytical tool tailored for Magic: The Gathering Commander (EDH) games (webcam & online platforms like Untap.in / Discord).
 
 ## Key Features
-- **Hypergeometric Probability Calculator:** Real-time odds calculation of opponents holding specific cards in hand.
-- **Moxfield / Text Decklist Parser:** Fast import of decklists directly from text or Moxfield exports.
-- **Scryfall Integration:** Automatic caching and display of card art and metadata.
-- **Tactical Smart Overlay:** Multi-player game-state dashboard tracking Life, Commander Damage, and Commander Tax.
-- **Local SQLite Storage:** Offline-first architecture for local deck saving and game statistics.
+
+- **Tactical Smart Overlay:** Multi-player game-state dashboard tracking Life, Commander Damage, Commander Tax, Poison, and player turn states in real time.
+- **Commander Analytics & Winrates:** Tracks match history by Commander (not just deck names) with deep matchup breakdown (Win Rate vs. specific opponent Commanders).
+- **Interactive Deck & Probability Tracker:** Built-in MTG deck management, Moxfield import, Scryfall metadata integration, and hypergeometric probability calculations for drawn cards.
+- **Customizable Room Lobby:** Multi-player game setup with room configuration options (e.g. toggle Deck Tracker permission).
+- **Local SQLite Engine:** Offline-first architecture for match results logging, commander performance analytics, and local deck storage.
+- **Modern Dark UI:** Responsive CustomTkinter interface designed for secondary monitor usage during live matches.
 
 ## Project Structure
+
 ```text
 NMTPJI/
-├── core/         # Business logic (math, parsers, Scryfall API)
-├── database/     # SQLite database handlers
-├── gui/          # CustomTkinter interface views and components
-├── network/      # Peer-to-peer room state synchronization
+├── core/         # Business logic (engine state, hypergeometric math, parsers, Scryfall API)
+├── database/     # SQLite database handlers, match history & commander stats persistence
+├── gui/          # CustomTkinter interface, modals (EndMatchWindow), views & components
+│   ├── components/ # Reusable UI components (PlayerBoard, LifeCounter, StatsWidgets)
+│   └── views/      # Application views (RoomView, StatisticsView, DeckTrackerView)
+├── network/      # Peer-to-peer room state synchronization & lobby state
 └── main.py       # Application entry point
