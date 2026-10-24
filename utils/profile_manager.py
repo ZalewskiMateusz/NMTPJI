@@ -6,13 +6,14 @@ AVATARS_DIR = os.path.join("assets", "avatars")
 
 DEFAULT_PROFILE = {
     "nickname": "Player",
-    "avatar_filename": "jace.png"
+    "avatar_filename": "jace.png",
+    "selected_emotes": []
 }
 
 class ProfileManager:
     @staticmethod
     def has_profile():
-        """Zwraca True, jeśli plik profilu istnieje i zawiera niepusty nickname."""
+        """Returns True if the profile file exists and contains a non-empty nickname."""
         if not os.path.exists(PROFILE_FILE):
             return False
         try:
@@ -28,24 +29,32 @@ class ProfileManager:
             return DEFAULT_PROFILE.copy()
         try:
             with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Ensure selected_emotes key exists in older profiles
+                if "selected_emotes" not in data:
+                    data["selected_emotes"] = []
+                return data
         except Exception as e:
-            print(f"[ERROR] Błąd odczytu profilu: {e}")
+            print(f"[ERROR] Failed to load profile: {e}")
             return DEFAULT_PROFILE.copy()
 
     @staticmethod
-    def save_profile(nickname, avatar_filename):
+    def save_profile(nickname, avatar_filename, selected_emotes=None):
         os.makedirs("saved_decks", exist_ok=True)
+        if selected_emotes is None:
+            selected_emotes = []
+
         profile_data = {
             "nickname": nickname.strip() if nickname.strip() else "Player",
-            "avatar_filename": avatar_filename
+            "avatar_filename": avatar_filename,
+            "selected_emotes": selected_emotes
         }
         try:
             with open(PROFILE_FILE, "w", encoding="utf-8") as f:
                 json.dump(profile_data, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
-            print(f"[ERROR] Błąd zapisu profilu: {e}")
+            print(f"[ERROR] Failed to save profile: {e}")
             return False
 
     @staticmethod

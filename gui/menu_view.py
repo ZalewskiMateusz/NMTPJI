@@ -1,6 +1,6 @@
 import os
 import customtkinter as ctk
-from gui.styles import BTN_STYLE_NORMAL, BTN_STYLE_QUIT
+from utils.styles import BTN_STYLE_NORMAL, BTN_STYLE_QUIT
 from utils.profile_manager import ProfileManager
 from gui.profile_dialog import ProfileDialog
 

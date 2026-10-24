@@ -2,7 +2,7 @@
 import uuid
 import customtkinter as ctk
 from database.db_manager import DBManager
-from gui.styles import BTN_STYLE_ACCENT, BTN_STYLE_QUIT
+from utils.styles import BTN_STYLE_ACCENT, BTN_STYLE_QUIT
 
 
 class CreateRoomView(ctk.CTkFrame):

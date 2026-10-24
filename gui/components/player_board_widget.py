@@ -1,14 +1,20 @@
 import os
 import threading
 import time
+import random
 import cv2
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageSequence
 
 from core.calculator import OddsCalculator
 from core.scryfall import ScryfallAPI
 from database.db_manager import DBManager
 from gui.components.stream_dialog import StreamSourceDialog
+from utils.profile_manager import ProfileManager, AVATARS_DIR
+
+# Robust absolute path detection for assets/emotes folder
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+EMOTES_DIR = os.path.join(BASE_DIR, "assets", "emotes")
 
 FONT_HEADER = "Georgia"
 FONT_UI = "Segoe UI"
@@ -73,6 +79,14 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.client = client
         self.is_local = is_local
 
+        # If local player, load custom profile settings (nickname & avatar)
+        if self.is_local:
+            profile = ProfileManager.load_profile()
+            self.player_name = profile.get("nickname", player_name)
+            self.avatar_filename = profile.get("avatar_filename", "jace.png")
+        else:
+            self.avatar_filename = "jace.png"
+
         self.is_stats_visible = False
         self.is_cmdr_visible = False
 
@@ -89,22 +103,33 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.main_board.pack(fill="both", expand=True, padx=6, pady=6)
 
         # --- TOP BAR ---
-        self.top_bar = ctk.CTkFrame(self.main_board, fg_color="#1a1a1a", corner_radius=8)
-        self.top_bar.pack(fill="x", side="top", pady=(0, 5), ipady=4)
+        self.top_bar = ctk.CTkFrame(self.main_board, fg_color="#1a1a1a", corner_radius=8, height=44)
+        self.top_bar.pack(fill="x", side="top", pady=(0, 5))
+        self.top_bar.pack_propagate(False)
 
-        self.lbl_name = ctk.CTkLabel(
-            self.top_bar, text=self.player_name, font=(FONT_UI, 15, "bold"), text_color="#FFFFFF", anchor="w"
-        )
-        self.lbl_name.pack(side="left", padx=(10, 5))
+        # RIGHT SIDE GROUP (Status, Avatar, Nickname) packed to the right
+        self.right_group = ctk.CTkFrame(self.top_bar, fg_color="transparent")
+        self.right_group.pack(side="right", padx=10)
 
         self.lbl_status = ctk.CTkLabel(
-            self.top_bar, text="WAITING", font=(FONT_UI, 11, "bold"), text_color="#666666"
+            self.right_group, text="WAITING", font=(FONT_UI, 11, "bold"), text_color="#666666"
         )
-        self.lbl_status.pack(side="right", padx=(0, 10))
+        self.lbl_status.pack(side="right", padx=(5, 0))
 
-        # STATS CENTER
+        self.avatar_img_ref = None
+        self.lbl_avatar = ctk.CTkLabel(self.right_group, text="", width=32, height=32, cursor="hand2")
+        self.lbl_avatar.pack(side="right", padx=5)
+        self.lbl_avatar.bind("<Button-1>", lambda e: self.open_emote_menu())
+
+        self.lbl_name = ctk.CTkLabel(
+            self.right_group, text=self.player_name, font=(FONT_UI, 14, "bold"), text_color="#FFFFFF", cursor="hand2"
+        )
+        self.lbl_name.pack(side="right", padx=5)
+        self.lbl_name.bind("<Button-1>", lambda e: self.open_emote_menu())
+
+        # STATS CENTER (Strictly centered inside top bar)
         self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
-        self.center_stats_container.place(relx=0.5, rely=0.5, anchor="center")
+        self.center_stats_container.place(relx=0.42, rely=0.5, anchor="center")
 
         self.btn_tax = ctk.CTkButton(self.center_stats_container, text="TAX: 0", font=(FONT_UI, 11, "bold"), width=52,
                                      height=26, fg_color="#252525", hover_color="#333333")
@@ -154,7 +179,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.lbl_video_frame = ctk.CTkLabel(self.center_area, text="", fg_color="transparent")
         self.lbl_video_frame.pack(fill="both", expand=True)
 
-        # Right-click anywhere in video area to switch sources on the fly
         self.center_area.bind("<Button-3>", lambda e: self._select_stream_source())
         self.lbl_video_frame.bind("<Button-3>", lambda e: self._select_stream_source())
 
@@ -180,6 +204,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
         self._setup_stats_panel_ui()
         self.load_deck(deck_cards or {})
+        self.set_player_avatar(self.avatar_filename)
 
     def _select_stream_source(self):
         StreamSourceDialog(self, on_select_callback=self.start_capturing_camera)
@@ -493,6 +518,9 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not self.card_states and hasattr(p_state, "deck") and p_state.deck:
             self.load_deck(p_state.deck)
 
+        if hasattr(p_state, "avatar_filename") and p_state.avatar_filename:
+            self.set_player_avatar(p_state.avatar_filename)
+
         has_zero_hp = p_state.hp <= 0
         has_10_poison = getattr(p_state, "poison", 0) >= 10
         has_21_cmdr_dmg = any(dmg >= 21 for dmg in getattr(p_state, "cmdr_damage_received", {}).values())
@@ -586,3 +614,170 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.cmdr_dropdown_frame.place(relx=0.5, y=0, anchor="n")
             self.cmdr_dropdown_frame.lift()
             self.is_cmdr_visible = True
+
+    def set_player_avatar(self, avatar_filename: str):
+        avatar_path = os.path.join(AVATARS_DIR, avatar_filename)
+        if not os.path.exists(avatar_path):
+            avatar_path = os.path.join(AVATARS_DIR, "jace.png")
+
+        try:
+            pil_img = Image.open(avatar_path)
+            self.avatar_img_ref = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(32, 32))
+            self.lbl_avatar.configure(image=self.avatar_img_ref)
+        except Exception as e:
+            print(f"[AVATAR ERROR] Failed to load avatar image: {e}")
+
+    def open_emote_menu(self):
+        print("[EMOTES DEBUG] Otwieranie menu emotek...")
+
+        # Jeśli menu już istnieje, zamknij je (toggle)
+        if hasattr(self, "_active_emote_menu") and self._active_emote_menu:
+            try:
+                self._active_emote_menu.destroy()
+            except Exception:
+                pass
+            self._active_emote_menu = None
+            return
+
+        profile = ProfileManager.load_profile() if self.is_local else {}
+        emotes = profile.get("selected_emotes", [])
+
+        if not emotes:
+            try:
+                emotes = [f for f in os.listdir(EMOTES_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))][
+                         :6]
+            except Exception:
+                emotes = []
+
+        print(f"[EMOTES DEBUG] Znalezione emotki: {emotes}")
+        if not emotes:
+            print("[EMOTES] Brak dostępnych emotek w folderze!")
+            return
+
+        # Tworzymy ramkę bezpośrednio wewnątrz głównej planszy gracza (zamiast osobnego Toplevel)
+        menu = ctk.CTkFrame(self.main_board, fg_color="#1E1E1E", corner_radius=8, border_width=1,
+                            border_color="#333333")
+        self._active_emote_menu = menu
+
+        # Umieszczamy ją w prawym górnym rogu obok awatara
+        menu.place(relx=1.0, x=-10, y=45, anchor="ne")
+        menu.lift()
+
+        def close_menu():
+            try:
+                menu.destroy()
+            except Exception:
+                pass
+            if hasattr(self, "_active_emote_menu"):
+                self._active_emote_menu = None
+
+        for emote_filename in emotes:
+            img_path = os.path.join(EMOTES_DIR, emote_filename)
+            try:
+                pil_img = Image.open(img_path)
+                pil_img.seek(0)
+                ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(36, 36))
+            except Exception as e:
+                print(f"[EMOTES DEBUG] Błąd ładowania miniatury {emote_filename}: {e}")
+                ctk_img = None
+
+            btn = ctk.CTkButton(
+                menu,
+                text="",
+                image=ctk_img,
+                width=42,
+                height=42,
+                fg_color="#2B2B2B",
+                hover_color="#3A3A3A",
+                command=lambda fn=emote_filename: (close_menu(), self.send_and_show_emote(fn))
+            )
+            btn.pack(pady=4, padx=4)
+
+    def _on_emote_clicked(self, filename, menu_window):
+        print(f"[EMOTES DEBUG] Kliknięto przycisk emotki: {filename}")
+        try:
+            menu_window.destroy()
+        except Exception:
+            pass
+        self.send_and_show_emote(filename)
+
+    def send_and_show_emote(self, emote_filename):
+        print(f"[EMOTES DEBUG] Wywołano send_and_show_emote dla: {emote_filename}")
+        if self.client and self.is_local:
+            self.client.send_action("PLAY_EMOTE", {"player_id": self.player_id, "emote": emote_filename})
+
+        self._animate_flying_emote(emote_filename)
+
+    def _animate_flying_emote(self, filename):
+        img_path = os.path.join(EMOTES_DIR, filename)
+        print(f"[EMOTE DEBUG] Próba uruchomienia animacji pliku: {img_path}")
+        if not os.path.exists(img_path):
+            print(f"[EMOTE ERROR] Plik emotki nie istnieje pod ścieżką: {img_path}")
+            return
+
+        try:
+            pil_img = Image.open(img_path)
+        except Exception as e:
+            print(f"[EMOTE ERROR] Nie udało się otworzyć obrazka: {e}")
+            return
+
+        frames = []
+        try:
+            for frame in ImageSequence.Iterator(pil_img):
+                frame_copy = frame.copy().convert("RGBA")
+                ctk_img = ctk.CTkImage(light_image=frame_copy, dark_image=frame_copy, size=(64, 64))
+                frames.append(ctk_img)
+        except Exception as e:
+            print(f"[EMOTE FRAMES ERROR] Błąd wyciągania klatek: {e}")
+
+        print(f"[EMOTE DEBUG] Wczytano klatek dla animacji: {len(frames)}")
+        if not frames:
+            return
+
+        fly_win = ctk.CTkToplevel(self)
+        fly_win.overrideredirect(True)
+        fly_win.attributes("-topmost", True)
+        fly_win.configure(fg_color="#121212")
+
+        lbl = ctk.CTkLabel(fly_win, text="", image=frames[0], fg_color="transparent")
+        lbl.pack(fill="both", expand=True)
+        lbl.frames_ref = frames
+        fly_win.frames_ref = frames
+
+        start_x = self.lbl_avatar.winfo_rootx()
+        start_y = self.lbl_avatar.winfo_rooty()
+        print(f"[EMOTE DEBUG] Pozycja startowa animacji: X={start_x}, Y={start_y}")
+
+        fly_win.geometry(f"64x64+{start_x}+{start_y}")
+        fly_win.deiconify()
+        fly_win.lift()
+
+        arc_offset = random.randint(-80, 80)
+        steps = 35
+        duration_ms = 1100
+        delay = duration_ms // steps
+
+        def step_animation(current_step):
+            if current_step > steps or not fly_win.winfo_exists():
+                if fly_win.winfo_exists():
+                    fly_win.destroy()
+                return
+
+            progress = current_step / steps
+            curr_x = start_x + (arc_offset * progress)
+            curr_y = start_y + (180 * progress) + (40 * math_parabola_curve(progress))
+
+            frame_idx = current_step % len(frames)
+            lbl.configure(image=frames[frame_idx])
+
+            try:
+                fly_win.geometry(f"64x64+{int(curr_x)}+{int(curr_y)}")
+            except Exception:
+                pass
+            self.after(delay, lambda: step_animation(current_step + 1))
+
+        step_animation(0)
+
+
+def math_parabola_curve(p):
+    return -4 * (p - 0.5) ** 2 + 1

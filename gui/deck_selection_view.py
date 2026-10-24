@@ -3,7 +3,7 @@ import customtkinter as ctk
 
 from database.db_manager import DBManager
 from gui.new_deck_window import NewDeckWindow
-from gui.styles import BTN_STYLE_NORMAL, BTN_STYLE_QUIT, LBL_STYLE_BIG
+from utils.styles import BTN_STYLE_NORMAL, BTN_STYLE_QUIT, LBL_STYLE_BIG
 
 FONT_PATH = os.path.join("assets", "fonts", "Kanisah.ttf")
 if os.path.exists(FONT_PATH):
