@@ -11,6 +11,8 @@ if os.path.exists(FONT_PATH):
 
 
 class JoinRoomView(ctk.CTkFrame):
+    """View component responsible for handling the multiplayer room join interface."""
+
     def __init__(self, master, on_start_game_callback=None, on_back_callback=None):
         super().__init__(master, fg_color="#121212")
         self.on_start_game_callback = on_start_game_callback
@@ -22,6 +24,7 @@ class JoinRoomView(ctk.CTkFrame):
         self._build_ui()
 
     def _build_ui(self):
+        """Constructs the join room form layout and input components."""
         self.card = ctk.CTkFrame(
             self,
             fg_color="#1E1E1E",
@@ -48,7 +51,7 @@ class JoinRoomView(ctk.CTkFrame):
         )
         lbl_subtitle.pack(pady=(0, 20))
 
-        # 1. Host IP / Room Code
+        # Host IP or Room Code input section
         ctk.CTkLabel(self.card, text="Host IP Address / Room Code", font=("Segoe UI", 11), text_color="#CCCCCC").pack(
             anchor="w", padx=30)
         self.entry_ip = ctk.CTkEntry(
@@ -61,7 +64,7 @@ class JoinRoomView(ctk.CTkFrame):
         self.entry_ip.insert(0, "127.0.0.1")
         self.entry_ip.pack(fill="x", padx=30, pady=(4, 12))
 
-        # 2. Password
+        # Password input section
         ctk.CTkLabel(self.card, text="Password (Optional)", font=("Segoe UI", 11), text_color="#CCCCCC").pack(
             anchor="w", padx=30)
         self.entry_password = ctk.CTkEntry(
@@ -74,7 +77,7 @@ class JoinRoomView(ctk.CTkFrame):
         )
         self.entry_password.pack(fill="x", padx=30, pady=(4, 12))
 
-        # 3. Select Deck
+        # Deck selection dropdown section
         saved_decks = DBManager.get_all_deck_names() or ["Mój Deck"]
         ctk.CTkLabel(self.card, text="Select Deck", font=("Segoe UI", 11), text_color="#CCCCCC").pack(anchor="w",
                                                                                                       padx=30)
@@ -89,7 +92,7 @@ class JoinRoomView(ctk.CTkFrame):
         )
         self.combo_decks.pack(fill="x", padx=30, pady=(4, 12))
 
-        # 4. Select Commander
+        # Commander selection dropdown section
         ctk.CTkLabel(self.card, text="Select Commander", font=("Segoe UI", 11), text_color="#CCCCCC").pack(anchor="w",
                                                                                                            padx=30)
         self.combo_commander = ctk.CTkOptionMenu(
@@ -139,6 +142,7 @@ class JoinRoomView(ctk.CTkFrame):
         self.btn_cancel.pack(side="right", expand=True, fill="x", padx=(8, 0))
 
     def _on_deck_selected(self, selected_deck_name):
+        """Updates available commanders based on the selected deck."""
         deck_data = DBManager.get_deck_by_name(selected_deck_name)
         if deck_data and "commander" in deck_data:
             cmdr = deck_data["commander"]
@@ -149,6 +153,7 @@ class JoinRoomView(ctk.CTkFrame):
             self.combo_commander.set("Aftermath Analyst")
 
     def _join_room_action(self):
+        """Validates inputs, connects to the host server, and transitions to the lobby view."""
         raw_code = self.entry_ip.get().strip()
         password = self.entry_password.get().strip()
 
@@ -166,7 +171,7 @@ class JoinRoomView(ctk.CTkFrame):
         target_ip = decode_code_to_ip(raw_code)
         self.lbl_status.configure(text=f"Connecting to {target_ip}...", text_color="#00E676")
 
-        # 1. Łączymy gniazdo TCP
+        # Establish TCP connection
         if self.client.connect(target_ip):
             player_info = {
                 "id": f"p_{nick}",
@@ -178,8 +183,7 @@ class JoinRoomView(ctk.CTkFrame):
                 "is_host": False
             }
 
-            # 2. PRZEŁĄCZAMY EKRAN U KLIENTA NA ROOMVIEW (LOBBY)
-            # Sprawdź w main.py / app.py jak dokładnie nazywa się ta metoda u Ciebie na masterze!
+            # Switch view to RoomView (Lobby)
             if hasattr(self.master, "show_room_view"):
                 self.master.show_room_view(
                     is_host=False,
@@ -190,10 +194,9 @@ class JoinRoomView(ctk.CTkFrame):
                     commander=selected_cmdr
                 )
             elif hasattr(self.master, "show_frame"):
-                # Jeśli używasz uniwersalnego menedżera ramek:
                 self.master.show_frame("RoomView", is_host=False, client=self.client)
 
-            # 3. Wysyłamy pakiet JOIN dopiero po przełączeniu widoku
+            # Send join payload after view transition
             if hasattr(self.client, "send_join"):
                 self.client.send_join(player_info)
             else:
@@ -202,6 +205,7 @@ class JoinRoomView(ctk.CTkFrame):
             self.lbl_status.configure(text="Failed to connect to host!", text_color="#FF5252")
 
     def _on_server_message(self, message):
+        """Handles incoming socket messages from the server."""
         msg_type = message.get("type")
 
         if msg_type == "LOBBY_UPDATE":
@@ -212,6 +216,7 @@ class JoinRoomView(ctk.CTkFrame):
                 self.after(0, lambda: self.on_start_game_callback({"players": self.players}))
 
     def _go_back(self):
+        """Disconnects client and returns to the previous menu."""
         self.client.disconnect()
         if self.on_back_callback:
             self.on_back_callback()

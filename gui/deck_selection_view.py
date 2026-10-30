@@ -1,5 +1,6 @@
 import os
 import customtkinter as ctk
+from tkinter import messagebox
 
 from database.db_manager import DBManager
 from gui.new_deck_window import NewDeckWindow
@@ -16,6 +17,7 @@ class DeckSelectionView(ctk.CTkFrame):
         Context-aware view for deck management:
         - "editor" -> triggers deck editing flow
         - "room"   -> triggers room loading flow
+        - "delete" -> triggers deck deletion flow
         """
         super().__init__(master, fg_color="#121212")
         self.mode = mode
@@ -31,9 +33,6 @@ class DeckSelectionView(ctk.CTkFrame):
         # Central Column Frame (centered on screen)
         self.central_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         self.central_frame.place(relx=0.5, rely=0.5, anchor="center")
-
-        # Dynamic label for the action trigger button
-        second_btn_text = "Edit Deck" if self.mode == "editor" else "Load Deck"
 
         # 1. View Header
         self.title_label = ctk.CTkLabel(
@@ -52,16 +51,31 @@ class DeckSelectionView(ctk.CTkFrame):
         )
         self.new_deck_btn.pack(pady=10, padx=20, fill="x")
 
-        # 3. Button: Opens the deck selection list (Normal)
+        # 3. Button: Edit Deck (or Load Deck depending on context)
+        second_btn_text = "Edit Deck" if self.mode == "editor" else "Load Deck"
         self.second_action_btn = ctk.CTkButton(
             self.central_frame,
             text=second_btn_text,
             **BTN_STYLE_NORMAL,
-            command=self.load_deck_list
+            command=lambda: self.load_deck_list(action_mode="select")
         )
         self.second_action_btn.pack(pady=10, padx=20, fill="x")
 
-        # 4. Button: Return to main menu (Quit/Back style)
+        # 4. Button: Delete Deck
+        self.delete_deck_btn = ctk.CTkButton(
+            self.central_frame,
+            text="Delete Deck",
+            fg_color="#8B0000",
+            hover_color="#A52A2A",
+            text_color="#FFFFFF",
+            font=("Segoe UI", 16, "bold"),
+            corner_radius=12,
+            height=40,
+            command=lambda: self.load_deck_list(action_mode="delete")
+        )
+        self.delete_deck_btn.pack(pady=10, padx=20, fill="x")
+
+        # 5. Button: Return to main menu (Quit/Back style)
         self.back_btn = ctk.CTkButton(
             self.central_frame,
             text="Back to Menu",
@@ -74,19 +88,23 @@ class DeckSelectionView(ctk.CTkFrame):
         """Opens the modal to import/save a new deck."""
         NewDeckWindow(parent=self, on_save_callback=self.refresh_deck_list_if_visible)
 
-    def load_deck_list(self):
+    def load_deck_list(self, action_mode="select"):
         """
         Primary action handler: Lazily instantiates the scrollable list container
         if not present, then populates it with saved decks from SQLite.
         """
+        self.current_action_mode = action_mode
+
         if self.scroll_frame is None:
-            # Temporarily hide trigger to make room for scroll frame
+            # Hide trigger buttons to make room for scroll frame
             self.second_action_btn.pack_forget()
+            self.delete_deck_btn.pack_forget()
             self.back_btn.pack_forget()
 
+            label_text = "Select Deck to Delete" if action_mode == "delete" else "Select Deck from Database"
             self.scroll_frame = ctk.CTkScrollableFrame(
                 self.central_frame,
-                label_text="Select Deck from Database",
+                label_text=label_text,
                 label_text_color="#8A9BA8",
                 fg_color="#1A1A1A",
                 width=320,
@@ -136,14 +154,36 @@ class DeckSelectionView(ctk.CTkFrame):
                 anchor="w",
                 height=34,
                 corner_radius=8,
-                command=lambda d=name: self.select_deck(d)
+                command=lambda d=name: self.handle_deck_selection(d)
             )
             btn.pack(fill="x", pady=4, padx=5)
             self.deck_buttons.append(btn)
 
+    def handle_deck_selection(self, deck_name):
+        """Routes action based on whether we are selecting for edit/load or delete."""
+        if getattr(self, "current_action_mode", "select") == "delete":
+            self.confirm_and_delete_deck(deck_name)
+        else:
+            self.select_deck(deck_name)
+
+    def confirm_and_delete_deck(self, deck_name):
+        """Asks for confirmation and deletes the selected deck from the database."""
+        confirm = messagebox.askyesno(
+            "Confirm Deletion",
+            f"Are you sure you want to delete the deck '{deck_name}'?"
+        )
+        if confirm:
+            try:
+                DBManager.delete_deck(deck_name)
+                print(f"[DATABASE] Deck '{deck_name}' successfully deleted.")
+                self.refresh_deck_list_if_visible()
+            except Exception as e:
+                print(f"Error deleting deck: {e}")
+                messagebox.showerror("Error", f"Could not delete deck: {e}")
+
     def select_deck(self, deck_name):
         """
-        Execution step triggered when a specific deck is chosen from the rendered list.
+        Execution step triggered when a specific deck is chosen for editing or loading.
         """
         self.selected_deck_name = deck_name
         cards = DBManager.get_deck_cards(self.selected_deck_name)

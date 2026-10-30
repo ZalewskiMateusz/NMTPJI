@@ -20,7 +20,7 @@ class MenuView(ctk.CTkFrame):
         self.Main_Container = ctk.CTkFrame(self, fg_color="#121212")
         self.Main_Container.pack(expand=True, fill="both")
 
-        # --- CENTRALNA KOLUMNA MENU ---
+        # --- Central Column ---
         self.menu_central_frame = ctk.CTkFrame(self.Main_Container, fg_color="transparent")
         self.menu_central_frame.place(relx=0.5, rely=0.5, anchor="center")
 

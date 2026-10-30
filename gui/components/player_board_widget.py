@@ -1,8 +1,10 @@
+import math
 import os
+import random
 import threading
 import time
-import random
 import cv2
+import requests
 import customtkinter as ctk
 from PIL import Image, ImageSequence
 
@@ -12,7 +14,6 @@ from database.db_manager import DBManager
 from gui.components.stream_dialog import StreamSourceDialog
 from utils.profile_manager import ProfileManager, AVATARS_DIR
 
-# Robust absolute path detection for assets/emotes folder
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 EMOTES_DIR = os.path.join(BASE_DIR, "assets", "emotes")
 
@@ -22,6 +23,8 @@ DEFAULT_MAX_HP = 40
 
 
 class CardHoverTooltip(ctk.CTkToplevel):
+    """Floating tooltip displaying a full-size preview of the MTG card with no clipping."""
+
     def __init__(self, master):
         super().__init__(master)
         self.overrideredirect(True)
@@ -29,17 +32,20 @@ class CardHoverTooltip(ctk.CTkToplevel):
         self.configure(fg_color="#1E1E1E")
         self.withdraw()
 
-        self.lbl_image = ctk.CTkLabel(self, text="Loading...")
-        self.lbl_image.pack(padx=4, pady=4)
+        # Sztywny rozmiar etykiety dopasowany w 100% do karty MTG, zapobiegający ucinaniu
+        self.lbl_image = ctk.CTkLabel(self, text="Loading...", fg_color="transparent", width=240, height=336)
+        self.lbl_image.pack(padx=2, pady=2)
         self.active_card_name = None
         self._current_img = None
 
     def show_image(self, img_path, x, y, card_name):
+        """Renders the card preview safely ensuring it stays fully visible on screen without clipping."""
         self.active_card_name = card_name
         if img_path and os.path.exists(img_path):
             try:
                 pil_img = Image.open(img_path)
-                self._current_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(200, 280))
+                # Pełny, prostokątny format karty MTG (proporcje 5:7)
+                self._current_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(240, 336))
                 self.lbl_image.configure(image=self._current_img, text="")
             except Exception:
                 self._current_img = None
@@ -48,19 +54,38 @@ class CardHoverTooltip(ctk.CTkToplevel):
             self._current_img = None
             self.lbl_image.configure(image="", text="No Image Available")
 
-        self.geometry(f"+{x + 25}+{y - 100}")
+        # Bezpieczne pozycjonowanie na ekranie, żeby dymek nie wychodził poza krawędzie
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        pos_x = x + 20
+        pos_y = y - 50
+
+        if pos_x + 260 > screen_width:
+            pos_x = x - 260
+
+        if pos_y + 360 > screen_height:
+            pos_y = screen_height - 360
+
+        self.geometry(f"+{pos_x}+{pos_y}")
         self.deiconify()
         self.lift()
 
     def hide(self):
+        """Hides the tooltip window."""
         self.active_card_name = None
         self._current_img = None
         self.withdraw()
 
 
 class PlayerBoardWidget(ctk.CTkFrame):
+    """
+    Player overlay board widget displaying player stats, video feeds, deck statistics,
+    life counters, and interactive card controls.
+    """
     def __init__(self, parent, player_id: str, player_name: str = "Player", engine=None, deck_cards=None, client=None,
-                 is_local=False, **kwargs):
+                 is_local=False, total_players=4, all_players=None,
+                 on_fullscreen_callback=None, on_duel_callback=None, on_emote_callback=None, **kwargs):
         self.border_inactive = "#2a2a2a"
         self.border_active = "#00FF66"
 
@@ -79,13 +104,28 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.client = client
         self.is_local = is_local
 
-        # If local player, load custom profile settings (nickname & avatar)
+        self.total_players = total_players
+        self.all_players = all_players or {}
+        self.on_fullscreen_callback = on_fullscreen_callback
+        self.on_duel_callback = on_duel_callback
+        self.on_emote_callback = on_emote_callback
+        self._active_views_menu = None
+
+        initial_avatar = "jace.png"
+        if self.engine and hasattr(self.engine, "state") and self.engine.state and hasattr(self.engine.state, "players"):
+            p_state = self.engine.state.players.get(self.player_id)
+            if p_state:
+                initial_avatar = getattr(p_state, "avatar", None) or getattr(p_state, "avatar_filename", "jace.png")
+
         if self.is_local:
             profile = ProfileManager.load_profile()
             self.player_name = profile.get("nickname", player_name)
-            self.avatar_filename = profile.get("avatar_filename", "jace.png")
+            if not initial_avatar or initial_avatar == "jace.png":
+                self.avatar_filename = profile.get("avatar_filename", "jace.png")
+            else:
+                self.avatar_filename = initial_avatar
         else:
-            self.avatar_filename = "jace.png"
+            self.avatar_filename = initial_avatar or "jace.png"
 
         self.is_stats_visible = False
         self.is_cmdr_visible = False
@@ -97,6 +137,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.hide_drawn_var = ctk.BooleanVar(value=False)
         self.draw_x_var = ctk.StringVar(value="1")
         self.tooltip = CardHoverTooltip(self)
+        self._hover_timer = None  # Timer for delayed hover preview
 
         # --- MAIN BOARD ---
         self.main_board = ctk.CTkFrame(self, fg_color="transparent")
@@ -107,7 +148,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.top_bar.pack(fill="x", side="top", pady=(0, 5))
         self.top_bar.pack_propagate(False)
 
-        # RIGHT SIDE GROUP (Status, Avatar, Nickname) packed to the right
         self.right_group = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.right_group.pack(side="right", padx=10)
 
@@ -127,7 +167,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.lbl_name.pack(side="right", padx=5)
         self.lbl_name.bind("<Button-1>", lambda e: self.open_emote_menu())
 
-        # STATS CENTER (Strictly centered inside top bar)
         self.center_stats_container = ctk.CTkFrame(self.top_bar, fg_color="transparent")
         self.center_stats_container.place(relx=0.42, rely=0.5, anchor="center")
 
@@ -199,12 +238,125 @@ class PlayerBoardWidget(ctk.CTkFrame):
                                        fg_color="#252525", hover_color="#333333", command=self.toggle_stats_panel)
         self.btn_stats.place(x=6, y=6)
 
+        # --- VIEW OPTIONS MENU BUTTON ---
+        view_img = None
+        view_icon_path = os.path.join(BASE_DIR, "assets", "iconsNbuttons", "viewMenu.png")
+        if os.path.exists(view_icon_path):
+            try:
+                pil_img = Image.open(view_icon_path)
+                view_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(22, 22))
+            except Exception:
+                pass
+
+        self.btn_view_options = ctk.CTkButton(
+            self.center_area,
+            text="" if view_img else "⛶",
+            image=view_img,
+            width=28,
+            height=28,
+            font=(FONT_UI, 13, "bold"),
+            fg_color="#252525",
+            hover_color="#3A3A3A",
+            text_color="#00FF66",
+            corner_radius=6,
+            command=self.open_views_options_menu
+        )
+        self.btn_view_options.place(relx=0.98, rely=0.95, anchor="se")
+
         self.cmdr_dropdown_frame = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1,
                                                 border_color="#333333", corner_radius=8, width=200)
 
         self._setup_stats_panel_ui()
         self.load_deck(deck_cards or {})
         self.set_player_avatar(self.avatar_filename)
+
+    def open_views_options_menu(self):
+        """Opens view options menu (Full Screen and Duel Mode)."""
+        if self._active_views_menu and self._active_views_menu.winfo_exists():
+            self._active_views_menu.destroy()
+            self._active_views_menu = None
+            return
+
+        menu = ctk.CTkFrame(self.center_area, fg_color="#1E1E1E", border_width=1, border_color="#333333",
+                            corner_radius=8)
+        self._active_views_menu = menu
+        menu.place(relx=0.98, x=-5, rely=0.90, anchor="se")
+        menu.lift()
+
+        # 1. Full Screen option
+        btn_fs = ctk.CTkButton(
+            menu,
+            text="⛶ Full Screen",
+            font=(FONT_UI, 11, "bold"),
+            fg_color="#2B2B2B",
+            hover_color="#3A3A3A",
+            text_color="#00FF66",
+            anchor="w",
+            height=32,
+            command=lambda: (menu.destroy(), setattr(self, "_active_views_menu", None),
+                             self.on_fullscreen_callback(self.player_id) if self.on_fullscreen_callback else None)
+        )
+        btn_fs.pack(fill="x", padx=6, pady=(6, 3))
+
+        # 2. Duel Mode option
+        duel_img = None
+        duel_icon_path = os.path.join(BASE_DIR, "assets", "iconsNbuttons", "duelMode.png")
+        if os.path.exists(duel_icon_path):
+            try:
+                pil_img = Image.open(duel_icon_path)
+                duel_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(24, 24))
+            except Exception:
+                pass
+
+        btn_duel = ctk.CTkButton(
+            menu,
+            text="  1v1 Duel Mode",
+            image=duel_img,
+            compound="left",
+            font=(FONT_UI, 11, "bold"),
+            fg_color="#2B2B2B",
+            hover_color="#3A3A3A",
+            text_color="#FFD700",
+            anchor="w",
+            height=32,
+            command=self.open_duel_opponent_subselector
+        )
+        btn_duel.pack(fill="x", padx=6, pady=(3, 6))
+
+    def open_duel_opponent_subselector(self):
+        """Submenu for choosing an opponent in Duel Mode."""
+        if self._active_views_menu and self._active_views_menu.winfo_exists():
+            self._active_views_menu.destroy()
+
+        menu = ctk.CTkFrame(self.center_area, fg_color="#1E1E1E", border_width=1, border_color="#333333",
+                            corner_radius=8)
+        self._active_views_menu = menu
+        menu.place(relx=0.98, x=-5, rely=0.90, anchor="se")
+        menu.lift()
+
+        lbl_title = ctk.CTkLabel(menu, text="Select Opponent", font=(FONT_UI, 11, "bold"), text_color="#FFD700")
+        lbl_title.pack(padx=10, pady=(8, 4))
+
+        players_source = self.all_players if isinstance(self.all_players, dict) else {}
+        for p_id, p_state in players_source.items():
+            if p_id == self.player_id:
+                continue
+
+            p_name = getattr(p_state, "name", str(p_id))
+
+            btn_opp = ctk.CTkButton(
+                menu,
+                text=f"⚔ {p_name}",
+                font=(FONT_UI, 11, "bold"),
+                fg_color="#2B2B2B",
+                hover_color="#3A3A3A",
+                text_color="#FFFFFF",
+                anchor="w",
+                height=28,
+                command=lambda target_id=p_id: (menu.destroy(), setattr(self, "_active_views_menu", None),
+                                                self.on_duel_callback(target_id) if self.on_duel_callback else None)
+            )
+            btn_opp.pack(fill="x", padx=6, pady=2)
 
     def _select_stream_source(self):
         StreamSourceDialog(self, on_select_callback=self.start_capturing_camera)
@@ -255,6 +407,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.lbl_video_frame.image = ctk_image
 
     def _setup_stats_panel_ui(self):
+        """Constructs the slide-out deck statistics and card probability panel."""
         self.stats_panel = ctk.CTkFrame(self.center_area, fg_color="#1a1a1a", border_width=1, border_color="#333333",
                                         corner_radius=8, width=280)
 
@@ -292,6 +445,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         self.card_scroll_frame.pack(fill="both", expand=True, padx=4, pady=4)
 
     def load_deck(self, raw_deck):
+        """Loads and parses raw deck dictionary/list data into internal state."""
         self.card_states.clear()
         cards_dict = {}
 
@@ -332,6 +486,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
         return total_remaining
 
     def build_deck_stats_ui(self):
+        """Builds scrollable deck list with card thumbnails and delayed hover preview bindings."""
         if not hasattr(self, "card_scroll_frame"):
             return
 
@@ -350,7 +505,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
             drawn_qty = info["drawn_qty"]
 
             row = ctk.CTkFrame(self.card_scroll_frame, fg_color="transparent")
-            row.pack(fill="x", pady=2)
+            row.pack(fill="x", pady=3)
             self.card_row_widgets[card_name] = row
 
             if max_qty == 1:
@@ -360,29 +515,55 @@ class PlayerBoardWidget(ctk.CTkFrame):
                     corner_radius=3, variable=chk_var,
                     command=lambda name=card_name, var=chk_var: self._on_single_card_toggle(name, var)
                 )
-                chk.pack(side="left", padx=(2, 2))
+                chk.pack(side="left", padx=(2, 4))
             else:
                 cnt_var = ctk.StringVar(value=f"{drawn_qty}/{max_qty}")
-                btn_m = ctk.CTkButton(row, text="-", width=14, height=14, font=(FONT_UI, 8),
+                btn_m = ctk.CTkButton(row, text="-", width=16, height=16, font=(FONT_UI, 8),
                                       command=lambda n=card_name: self._change_card_qty(n, -1))
                 btn_m.pack(side="left", padx=1)
 
-                lbl_c = ctk.CTkLabel(row, textvariable=cnt_var, font=(FONT_UI, 9), width=20)
+                lbl_c = ctk.CTkLabel(row, textvariable=cnt_var, font=(FONT_UI, 9), width=22)
                 lbl_c.pack(side="left")
 
-                btn_p = ctk.CTkButton(row, text="+", width=14, height=14, font=(FONT_UI, 8),
+                btn_p = ctk.CTkButton(row, text="+", width=16, height=16, font=(FONT_UI, 8),
                                       command=lambda n=card_name: self._change_card_qty(n, 1))
                 btn_p.pack(side="left", padx=1)
                 info["cnt_var"] = cnt_var
 
-            btn_eye = ctk.CTkButton(
-                row, text="👁", width=18, height=18, font=(FONT_UI, 9), fg_color="#252525", hover_color="#3a3a3a"
+            # Thumbnail in stats list
+            thumb_lbl = ctk.CTkLabel(
+                row,
+                text="Card",
+                fg_color="#1E1E1E",
+                text_color="#888888",
+                corner_radius=4,
+                width=36,
+                height=50,
+                font=(FONT_UI, 8)
             )
-            btn_eye.configure(command=lambda name=card_name, b=btn_eye: self._show_card_preview(name, b))
-            btn_eye.pack(side="left", padx=(2, 4))
+            thumb_lbl.pack(side="left", padx=(2, 6))
 
-            lbl_name = ctk.CTkLabel(row, text=card_name, font=(FONT_UI, 10), text_color="#DDDDDD", anchor="w")
+            self._load_stat_card_thumbnail(card_name, thumb_lbl)
+
+            # Delayed hover implementation (800ms timer allows smooth scrolling without accidental popups)
+            def on_enter(e, name=card_name):
+                if self._hover_timer:
+                    self.after_cancel(self._hover_timer)
+                self._hover_timer = self.after(800, lambda: self._show_card_preview_on_hover(name, e.x_root, e.y_root))
+
+            def on_leave(e):
+                if self._hover_timer:
+                    self.after_cancel(self._hover_timer)
+                    self._hover_timer = None
+                self.tooltip.hide()
+
+            thumb_lbl.bind("<Enter>", on_enter)
+            thumb_lbl.bind("<Leave>", on_leave)
+
+            lbl_name = ctk.CTkLabel(row, text=card_name, font=(FONT_UI, 10, "bold"), text_color="#DDDDDD", anchor="w")
             lbl_name.pack(side="left", expand=True, fill="x")
+            lbl_name.bind("<Enter>", on_enter)
+            lbl_name.bind("<Leave>", on_leave)
 
             lbl_pct = ctk.CTkLabel(row, text="0.0%", font=(FONT_UI, 10, "bold"), text_color="#00FF66", width=42,
                                    anchor="e")
@@ -391,6 +572,50 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
         self.apply_visibility_filter()
         self.recalculate_probabilities()
+
+    def _load_stat_card_thumbnail(self, card_name, target_label):
+        """Asynchronously loads card thumbnail for the stats row."""
+        def _fetch():
+            cache_dir = os.path.join(BASE_DIR, "cache", "card_images")
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir)
+
+            safe_name = "".join(c for c in card_name if c.isalnum() or c in (' ', '_')).rstrip()
+            file_path = os.path.join(cache_dir, f"{safe_name}.jpg")
+
+            if not os.path.exists(file_path):
+                img_url = ScryfallAPI.get_card_image_path(card_name)
+                if img_url and isinstance(img_url, str) and img_url.startswith("http"):
+                    try:
+                        res = requests.get(img_url, timeout=4)
+                        if res.status_code == 200:
+                            with open(file_path, "wb") as f:
+                                f.write(res.content)
+                    except Exception:
+                        file_path = None
+                else:
+                    file_path = img_url if (img_url and os.path.exists(img_url)) else None
+
+            if file_path and os.path.exists(file_path):
+                try:
+                    pil_img = Image.open(file_path)
+                    ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(36, 50))
+                    self.after(0, lambda: target_label.configure(image=ctk_img, text=""))
+                    target_label.image = ctk_img
+                except Exception:
+                    pass
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def _show_card_preview_on_hover(self, card_name, x, y):
+        """Displays full-resolution card tooltip preview on hover after delay."""
+        self.tooltip.show_image(None, x, y, card_name)
+
+        def _fetch():
+            file_path = ScryfallAPI.get_card_image_path(card_name)
+            self.after(0, lambda: self.tooltip.show_image(file_path, x, y, card_name))
+
+        threading.Thread(target=_fetch, daemon=True).start()
 
     def apply_visibility_filter(self):
         hide_drawn = self.hide_drawn_var.get()
@@ -424,21 +649,6 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.lbl_gen_prob.configure(text=f"({draw_x_chance:.1f}%)")
         else:
             self.lbl_gen_prob.configure(text="(0.0%)")
-
-    def _show_card_preview(self, card_name, widget_btn):
-        if self.tooltip.winfo_ismapped() and getattr(self.tooltip, "active_card_name", None) == card_name:
-            self.tooltip.hide()
-            return
-
-        x = widget_btn.winfo_rootx() + widget_btn.winfo_width()
-        y = widget_btn.winfo_rooty()
-        self.tooltip.show_image(None, x, y, card_name)
-
-        def _fetch():
-            file_path = ScryfallAPI.get_card_image_path(card_name)
-            self.after(0, lambda: self.tooltip.show_image(file_path, x, y, card_name))
-
-        threading.Thread(target=_fetch, daemon=True).start()
 
     def _on_single_card_toggle(self, card_name, var):
         val = 1 if var.get() else 0
@@ -518,14 +728,9 @@ class PlayerBoardWidget(ctk.CTkFrame):
         if not self.card_states and hasattr(p_state, "deck") and p_state.deck:
             self.load_deck(p_state.deck)
 
-        if hasattr(p_state, "avatar_filename") and p_state.avatar_filename:
-            self.set_player_avatar(p_state.avatar_filename)
-
-        has_zero_hp = p_state.hp <= 0
-        has_10_poison = getattr(p_state, "poison", 0) >= 10
-        has_21_cmdr_dmg = any(dmg >= 21 for dmg in getattr(p_state, "cmdr_damage_received", {}).values())
-
-        p_state.is_alive = not (has_zero_hp or has_10_poison or has_21_cmdr_dmg)
+        avatar_to_set = getattr(p_state, "avatar", None) or getattr(p_state, "avatar_filename", None)
+        if avatar_to_set:
+            self.set_player_avatar(avatar_to_set)
 
         if hasattr(p_state, "name") and p_state.name:
             self.lbl_name.configure(text=p_state.name)
@@ -558,38 +763,38 @@ class PlayerBoardWidget(ctk.CTkFrame):
             self.lbl_status.configure(text="WAITING", text_color="#666666")
             self.configure(border_color=self.border_inactive)
 
-    def _refresh_and_notify(self, action_name=None, payload=None):
-        if self.engine:
-            self.engine.notify_subscribers()
-
-        if self.client and self.is_local and action_name and payload:
+    def _send_action(self, action_name, payload):
+        if self.client and self.client.is_connected:
             self.client.send_action(action_name, payload)
 
     def change_hp(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
-            p_state.update_hp(delta)
-            self._refresh_and_notify("UPDATE_HP", {"player_id": self.player_id, "hp": p_state.hp})
+            new_hp = max(0, p_state.hp + delta)
+            self._send_action("UPDATE_HP", {"player_id": self.player_id, "hp": new_hp, "delta": delta})
 
     def change_poison(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
-            p_state.update_poison(delta)
-            self._refresh_and_notify("UPDATE_POISON", {"player_id": self.player_id, "poison": p_state.poison})
+            new_poison = max(0, p_state.poison + delta)
+            self._send_action("UPDATE_POISON", {"player_id": self.player_id, "poison": new_poison, "delta": delta})
 
     def change_tax(self, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
-            p_state.update_tax(delta)
-            self._refresh_and_notify("UPDATE_TAX", {"player_id": self.player_id, "tax": p_state.cmdr_tax})
+            new_tax = max(0, p_state.cmdr_tax + delta)
+            self._send_action("UPDATE_TAX", {"player_id": self.player_id, "tax": new_tax, "delta": delta})
 
     def change_cmdr_damage(self, opponent_id: str, delta: int):
         p_state = self.engine.state.players.get(self.player_id) if self.engine else None
         if p_state:
-            p_state.receive_cmdr_damage(opponent_id, delta)
-            self._refresh_and_notify("UPDATE_CMDR_DMG", {
+            curr = p_state.cmdr_damage_received.get(opponent_id, 0)
+            new_dmg = max(0, curr + delta)
+            updated_dmg = dict(p_state.cmdr_damage_received)
+            updated_dmg[opponent_id] = new_dmg
+            self._send_action("UPDATE_CMDR_DMG", {
                 "player_id": self.player_id,
-                "cmdr_damage": p_state.cmdr_damage_received
+                "cmdr_damage": updated_dmg
             })
 
     def toggle_stats_panel(self):
@@ -628,9 +833,9 @@ class PlayerBoardWidget(ctk.CTkFrame):
             print(f"[AVATAR ERROR] Failed to load avatar image: {e}")
 
     def open_emote_menu(self):
-        print("[EMOTES DEBUG] Otwieranie menu emotek...")
+        if not self.is_local:
+            return
 
-        # Jeśli menu już istnieje, zamknij je (toggle)
         if hasattr(self, "_active_emote_menu") and self._active_emote_menu:
             try:
                 self._active_emote_menu.destroy()
@@ -644,22 +849,15 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
         if not emotes:
             try:
-                emotes = [f for f in os.listdir(EMOTES_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))][
-                         :6]
+                emotes = [f for f in os.listdir(EMOTES_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))][:6]
             except Exception:
                 emotes = []
 
-        print(f"[EMOTES DEBUG] Znalezione emotki: {emotes}")
         if not emotes:
-            print("[EMOTES] Brak dostępnych emotek w folderze!")
             return
 
-        # Tworzymy ramkę bezpośrednio wewnątrz głównej planszy gracza (zamiast osobnego Toplevel)
-        menu = ctk.CTkFrame(self.main_board, fg_color="#1E1E1E", corner_radius=8, border_width=1,
-                            border_color="#333333")
+        menu = ctk.CTkFrame(self.main_board, fg_color="#1E1E1E", corner_radius=8, border_width=1, border_color="#333333")
         self._active_emote_menu = menu
-
-        # Umieszczamy ją w prawym górnym rogu obok awatara
         menu.place(relx=1.0, x=-10, y=45, anchor="ne")
         menu.lift()
 
@@ -677,8 +875,7 @@ class PlayerBoardWidget(ctk.CTkFrame):
                 pil_img = Image.open(img_path)
                 pil_img.seek(0)
                 ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(36, 36))
-            except Exception as e:
-                print(f"[EMOTES DEBUG] Błąd ładowania miniatury {emote_filename}: {e}")
+            except Exception:
                 ctk_img = None
 
             btn = ctk.CTkButton(
@@ -693,32 +890,18 @@ class PlayerBoardWidget(ctk.CTkFrame):
             )
             btn.pack(pady=4, padx=4)
 
-    def _on_emote_clicked(self, filename, menu_window):
-        print(f"[EMOTES DEBUG] Kliknięto przycisk emotki: {filename}")
-        try:
-            menu_window.destroy()
-        except Exception:
-            pass
-        self.send_and_show_emote(filename)
-
     def send_and_show_emote(self, emote_filename):
-        print(f"[EMOTES DEBUG] Wywołano send_and_show_emote dla: {emote_filename}")
-        if self.client and self.is_local:
-            self.client.send_action("PLAY_EMOTE", {"player_id": self.player_id, "emote": emote_filename})
-
-        self._animate_flying_emote(emote_filename)
+        if self.is_local and self.on_emote_callback:
+            self.on_emote_callback(self.player_id, emote_filename)
 
     def _animate_flying_emote(self, filename):
         img_path = os.path.join(EMOTES_DIR, filename)
-        print(f"[EMOTE DEBUG] Próba uruchomienia animacji pliku: {img_path}")
         if not os.path.exists(img_path):
-            print(f"[EMOTE ERROR] Plik emotki nie istnieje pod ścieżką: {img_path}")
             return
 
         try:
             pil_img = Image.open(img_path)
-        except Exception as e:
-            print(f"[EMOTE ERROR] Nie udało się otworzyć obrazka: {e}")
+        except Exception:
             return
 
         frames = []
@@ -727,10 +910,9 @@ class PlayerBoardWidget(ctk.CTkFrame):
                 frame_copy = frame.copy().convert("RGBA")
                 ctk_img = ctk.CTkImage(light_image=frame_copy, dark_image=frame_copy, size=(64, 64))
                 frames.append(ctk_img)
-        except Exception as e:
-            print(f"[EMOTE FRAMES ERROR] Błąd wyciągania klatek: {e}")
+        except Exception:
+            pass
 
-        print(f"[EMOTE DEBUG] Wczytano klatek dla animacji: {len(frames)}")
         if not frames:
             return
 
@@ -741,12 +923,9 @@ class PlayerBoardWidget(ctk.CTkFrame):
 
         lbl = ctk.CTkLabel(fly_win, text="", image=frames[0], fg_color="transparent")
         lbl.pack(fill="both", expand=True)
-        lbl.frames_ref = frames
-        fly_win.frames_ref = frames
 
         start_x = self.lbl_avatar.winfo_rootx()
         start_y = self.lbl_avatar.winfo_rooty()
-        print(f"[EMOTE DEBUG] Pozycja startowa animacji: X={start_x}, Y={start_y}")
 
         fly_win.geometry(f"64x64+{start_x}+{start_y}")
         fly_win.deiconify()

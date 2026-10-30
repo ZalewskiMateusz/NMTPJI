@@ -258,6 +258,20 @@ class DBManager:
 
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def delete_deck(deck_name: str) -> None:
+        """Deletes a deck from the database by its name."""
+        if not os.path.exists(DBManager.DB_PATH):
+            return
+
+        conn = sqlite3.connect(DBManager.DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM decks WHERE deck_name = ?", (deck_name,))
+
+        conn.commit()
+        conn.close()
+
 
 if __name__ == "__main__":
     DBManager.init_db()

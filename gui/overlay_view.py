@@ -1,114 +1,58 @@
+import os
 import customtkinter as ctk
 from gui.components.game_header_widget import GameHeaderWidget
 from gui.components.player_board_widget import PlayerBoardWidget
 from gui.end_match_window import EndMatchWindow
-from utils.profile_manager import ProfileManager
+from utils.profile_manager import ProfileManager, AVATARS_DIR
+from backend.models import RoomState, PlayerState
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-class DummyPlayerState:
+class ClientEngine:
+    """Client engine maintaining current room state and notifying UI subscribers."""
 
-    def __init__(self, player_id, name, max_hp=40, avatar="jace.png"):
-        self.player_id = player_id
-        self.name = name
-        self.hp = max_hp
-        self.max_hp = max_hp
-        self.avatar = avatar
-        self.poison = 0
-        self.cmdr_tax = 0
-        self.is_alive = True
-        self.cmdr_damage_received = {}
-
-    def update_hp(self, delta):
-        self.hp = max(0, self.hp + delta)
-
-    def update_poison(self, delta):
-        self.poison = max(0, self.poison + delta)
-
-    def update_tax(self, delta):
-        self.cmdr_tax = max(0, self.cmdr_tax + delta)
-
-    def receive_cmdr_damage(self, opp_id, delta):
-        curr = self.cmdr_damage_received.get(opp_id, 0)
-        self.cmdr_damage_received[opp_id] = max(0, curr + delta)
-
-
-class DummyGameState:
-
-    def __init__(self, players):
-        self.players = players
-        self.turn_number = 1
-        self.active_player_index = 0
-
-    def get_current_player(self):
-        player_ids = list(self.players.keys())
-        if player_ids and self.active_player_index < len(player_ids):
-            return self.players[player_ids[self.active_player_index]]
-        return None
-
-
-class DummyEngine:
-
-    def __init__(self, players_dict):
-        self.state = DummyGameState(players_dict)
+    def __init__(self, room_state: RoomState):
+        self.state = room_state
         self.subscribers = []
 
     def subscribe(self, callback):
-        self.subscribers.append(callback)
+        if callback not in self.subscribers:
+            self.subscribers.append(callback)
 
     def notify_subscribers(self):
         for callback in self.subscribers:
             callback(self.state)
 
-    def next_turn(self):
-        alive_players = [
-            p for p in self.state.players.values() if getattr(p, "is_alive", True)
-        ]
-
-        if len(alive_players) <= 1:
-            self.notify_subscribers()
-            return
-
-        player_ids = list(self.state.players.keys())
-        num_players = len(player_ids)
-
-        for _ in range(num_players):
-            self.state.active_player_index = (
-                                                     self.state.active_player_index + 1
-                                             ) % num_players
-            current_id = player_ids[self.state.active_player_index]
-            current_player = self.state.players[current_id]
-
-            if getattr(current_player, "is_alive", True):
-                break
-
-        self.state.turn_number += 1
+    def update_state(self, state_dict):
+        self.state = RoomState.from_dict(state_dict)
         self.notify_subscribers()
 
 
 class OverlayView(ctk.CTkFrame):
-
     def __init__(self, master, room_config=None):
         super().__init__(master, fg_color="#121212")
         self.room_config = room_config or {}
 
-        # Zmienne śledzenia widoku (lokalne preferencje użytkownika)
-        self.focused_player_id = None  # None = widok siatki, p_id = full screen
-        self.follow_active_player = False  # Czy automatycznie powiększać aktywnego gracza
+        # View tracking variables (local user preferences)
+        self.focused_player_id = None
+        self.current_duel_opponent = None
+        self.follow_active_player = False
 
-        # Pobieramy klienta sieciowego z room_config i podpinamy nasłuch akcji gry
+        # Retrieve network client from room_config and bind game action listener
         self.client = self.room_config.get("client")
         if self.client:
             self.client.on_message_received = self._on_network_message
 
-        # Identyfikator lokalnego gracza
+        # Local player identifier
         profile = ProfileManager.load_profile()
         self.my_nickname = profile.get("nickname", "Player")
+
+        # 1. Initialize client engine based on room_config state or lobby players
+        self.engine = self._init_client_engine()
         self.my_player_id = self._resolve_my_player_id()
 
-        # 1. Inicjalizacja silnika na podstawie listy graczy z lobby i wylosowanego pierwszego gracza
-        self.engine = self._init_engine()
-
-        # 2. Górny pasek z GameHeaderWidget (zawsze widoczny na górze)
+        # 2. Top bar with GameHeaderWidget
         self.top_bar = ctk.CTkFrame(
             self, fg_color="#1E1E1E", height=50, corner_radius=0
         )
@@ -123,12 +67,12 @@ class OverlayView(ctk.CTkFrame):
         )
         self.header_widget.pack(fill="both", expand=True)
 
-        # 3. Kontener na siatkę graczy
+        # 3. Players grid container
         self.boards_container = ctk.CTkFrame(self, fg_color="transparent")
         self.boards_container.pack(expand=True, fill="both", padx=10, pady=5)
 
         self.player_widgets = {}
-        self.player_positions = {}  # Zapamiętujemy oryginalne pozycje (row, col, columnspan)
+        self.player_positions = {}
 
         self._configure_grid_layout()
         self._build_player_grid()
@@ -136,53 +80,60 @@ class OverlayView(ctk.CTkFrame):
         self.engine.subscribe(self.on_state_changed)
         self.on_state_changed(self.engine.state)
 
+    def _init_client_engine(self):
+        state_data = self.room_config.get("state")
+        if state_data:
+            room_state = RoomState.from_dict(state_data)
+        else:
+            starting_hp = self.room_config.get("starting_hp", 40)
+            players_list = self.room_config.get("players", [])
+            first_player_id = self.room_config.get("first_player_id")
+
+            host_id = players_list[0].get("id", "p1") if players_list else "p1"
+            room_state = RoomState(room_id="room_1", host_id=host_id, game_started=True)
+
+            if players_list:
+                for idx, p_info in enumerate(players_list):
+                    p_id = p_info.get("id", f"p{idx + 1}")
+                    p_name = p_info.get("name", f"Player {idx + 1}")
+                    p_avatar = p_info.get("avatar", "jace.png")
+
+                    p_state = PlayerState(player_id=p_id, name=p_name, hp=starting_hp)
+                    p_state.avatar = p_avatar
+                    room_state.players[p_id] = p_state
+                    if p_id not in room_state.turn_order:
+                        room_state.turn_order.append(p_id)
+            else:
+                profile = ProfileManager.load_profile()
+                host_name = profile.get("nickname", "Host")
+                p_state = PlayerState(player_id="p1", name=host_name, hp=starting_hp, is_host=True)
+                room_state.players["p1"] = p_state
+                room_state.turn_order.append("p1")
+
+            if first_player_id and first_player_id in room_state.turn_order:
+                room_state.current_turn_index = room_state.turn_order.index(first_player_id)
+
+        return ClientEngine(room_state)
+
     def _resolve_my_player_id(self):
         players_list = self.room_config.get("players", [])
         for p in players_list:
             if isinstance(p, dict) and p.get("name") == self.my_nickname:
                 return p.get("id")
-        return "p1"
 
-    def _init_engine(self):
-        starting_hp = self.room_config.get("starting_hp", 40)
-        players_list = self.room_config.get("players", [])
-        first_player_id = self.room_config.get("first_player_id")
+        for p_id, p_state in self.engine.state.players.items():
+            if p_state.name.startswith(self.my_nickname):
+                return p_id
 
-        players_dict = {}
-        active_index = 0
-
-        if players_list:
-            for idx, p_info in enumerate(players_list):
-                p_id = p_info.get("id", f"p{idx + 1}")
-                p_name = p_info.get("name", f"Player {idx + 1}")
-                p_avatar = p_info.get("avatar", "jace.png")  # Pobieramy awatar z danych gracza
-
-                players_dict[p_id] = DummyPlayerState(p_id, p_name, max_hp=starting_hp, avatar=p_avatar)
-
-                if first_player_id and p_id == first_player_id:
-                    active_index = idx
-        else:
-            host_name = self.room_config.get("host_name", "Player")
-            players_dict = {
-                "p1": DummyPlayerState("p1", f"{host_name} (YOU)", max_hp=starting_hp),
-                "p2": DummyPlayerState("p2", "Player 2", max_hp=starting_hp),
-                "p3": DummyPlayerState("p3", "Player 3", max_hp=starting_hp),
-                "p4": DummyPlayerState("p4", "Player 4", max_hp=starting_hp),
-            }
-
-        engine = DummyEngine(players_dict)
-        engine.state.active_player_index = active_index
-        return engine
+        return list(self.engine.state.players.keys())[0] if self.engine.state.players else "p1"
 
     def _configure_grid_layout(self):
-        """Konfiguruje wagi kolumn i wierszy siatki zależnie od liczby graczy."""
         self.boards_container.grid_columnconfigure(0, weight=1, uniform="board_col")
         self.boards_container.grid_columnconfigure(1, weight=1, uniform="board_col")
         self.boards_container.grid_rowconfigure(0, weight=1, uniform="board_row")
         self.boards_container.grid_rowconfigure(1, weight=1, uniform="board_row")
 
     def _get_slot_config(self, idx, num_players):
-        """Zwraca parametry układu (row, col, columnspan) dla graczy w overlayu."""
         if num_players == 2:
             pos = [(0, 0, 2), (1, 0, 2)]
         elif num_players == 3:
@@ -212,8 +163,8 @@ class OverlayView(ctk.CTkFrame):
             deck_to_pass = player_decks.get(p_id) or (
                 fallback_deck if i == 0 else None
             )
-            is_local_player = (p_id == self.my_player_id or p_state.name.startswith(self.my_nickname))
 
+            is_local_player = (p_id == self.my_player_id or p_state.name.startswith(self.my_nickname))
             padx_val = (120, 120) if (num_players == 3 and i == 2) else 5
 
             board = PlayerBoardWidget(
@@ -224,42 +175,40 @@ class OverlayView(ctk.CTkFrame):
                 deck_cards=deck_to_pass,
                 client=self.client,
                 is_local=is_local_player,
+                total_players=num_players,
+                all_players=self.engine.state.players,
+                on_fullscreen_callback=self.toggle_focus_player,
+                on_duel_callback=self.enable_duel_mode,
+                on_emote_callback=lambda pid, emote: self.send_global_action("PLAY_EMOTE",
+                                                                             {"player_id": pid, "emote": emote})
             )
             board.grid(row=row, column=col, columnspan=c_span, sticky="nsew", padx=padx_val, pady=5)
             self.player_widgets[p_id] = board
 
-            # Dodajemy uniwersalny, lokalny przycisk Full Screen w prawym dolnym rogu każdego kafelka
-            self._add_fullscreen_button_to_board(board, p_id)
+    def enable_duel_mode(self, opponent_id):
+        self.current_duel_opponent = opponent_id
+        self.focused_player_id = f"duel_{opponent_id}"
 
-    def _add_fullscreen_button_to_board(self, board_widget, player_id):
-        """Dodaje dyskretny przycisk Full Screen w prawym dolnym rogu planszy gracza."""
-        btn_fs = ctk.CTkButton(
-            board_widget,
-            text="⛶",
-            width=26,
-            height=26,
-            font=("Segoe UI", 12, "bold"),
-            fg_color="#2B2B2B",
-            hover_color="#3A3A3A",
-            text_color="#00FF66",
-            corner_radius=6,
-            command=lambda: self.toggle_focus_player(player_id)
-        )
-        btn_fs.place(relx=0.98, rely=0.95, anchor="se")
+        for p_id, widget in self.player_widgets.items():
+            if p_id == self.my_player_id:
+                widget.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+            elif p_id == opponent_id:
+                widget.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=5, pady=5)
+            else:
+                widget.grid_remove()
 
     def toggle_focus_player(self, player_id):
-        """Lokalne przełączenie Full Screen dla wybranego stołu (header pozostaje widoczny)."""
         if self.focused_player_id == player_id:
             self.reset_to_grid_view()
         else:
             self.focus_player(player_id)
 
     def focus_player(self, player_id):
-        """Rozciąga kafel wskazanego gracza na cały kontener pod headerem i ukrywa pozostałe."""
         if player_id not in self.player_widgets:
             return
 
         self.focused_player_id = player_id
+        self.current_duel_opponent = None
 
         for p_id, widget in self.player_widgets.items():
             if p_id == player_id:
@@ -270,8 +219,8 @@ class OverlayView(ctk.CTkFrame):
                 widget.grid_remove()
 
     def reset_to_grid_view(self):
-        """Przywraca standardowy widok siatki dla wszystkich graczy."""
         self.focused_player_id = None
+        self.current_duel_opponent = None
         num_players = len(self.engine.state.players)
 
         for p_id, widget in self.player_widgets.items():
@@ -291,19 +240,9 @@ class OverlayView(ctk.CTkFrame):
                 )
 
     def send_global_action(self, action_type, payload):
-        """Uniwersalna procedura wysyłająca akcję globalną do wszystkich graczy przez sieć."""
-        data = {
-            "type": "GAME_ACTION",
-            "action": action_type,
-            "player_id": self.my_player_id,
-            "payload": payload
-        }
-
-        if self.client:
-            self.client.send_raw(data)
-        elif hasattr(self, "server") and self.server:
-            self.server.broadcast(data)
-            self._process_game_action(action_type, payload)
+        """Sends an action through the network client to the server."""
+        if self.client and self.client.is_connected:
+            self.client.send_action(action_type, payload)
 
     def on_state_changed(self, state):
         self.header_widget.update_from_state(state)
@@ -316,11 +255,8 @@ class OverlayView(ctk.CTkFrame):
                 self.focus_player(active_player.player_id)
 
     def handle_header_action(self, action_type, payload):
-        """Obsługuje akcje globalne z nagłówka (Next Turn, End Match, Rzuty itp.)."""
         if action_type == "NEXT_TURN":
-            if hasattr(self.engine, "next_turn"):
-                self.engine.next_turn()
-                self.send_global_action("NEXT_TURN", {})
+            self.send_global_action("NEXT_TURN", {})
 
         elif action_type == "END_MATCH":
             self.open_end_match_modal()
@@ -338,49 +274,38 @@ class OverlayView(ctk.CTkFrame):
             else:
                 self.reset_to_grid_view()
 
-    # --- ODBIERANIE AKCJI Z SIECI ---
+    # --- NETWORK MESSAGE HANDLING ---
     def _on_network_message(self, message):
-        if message.get("type") != "GAME_ACTION":
-            return
+        msg_type = message.get("type")
 
-        action = message.get("action")
-        payload = message.get("payload", {})
-        self.after(0, lambda: self._process_game_action(action, payload))
+        if msg_type == "GAME_STATE_UPDATE":
+            state_dict = message.get("state")
+            if state_dict:
+                self.after(0, lambda: self.engine.update_state(state_dict))
 
-    def _process_game_action(self, action, payload):
-        p_id = payload.get("player_id")
-        p_state = self.engine.state.players.get(p_id) if p_id else None
+            action = message.get("action")
+            payload = message.get("payload", {})
+            if action == "PLAY_EMOTE":
+                self.after(0, lambda: self._process_emote(payload))
 
-        if action == "NEXT_TURN":
-            self.engine.next_turn()
+        elif msg_type == "GAME_ACTION":
+            action = message.get("action")
+            payload = message.get("payload", {})
+            if action == "PLAY_EMOTE":
+                self.after(0, lambda: self._process_emote(payload))
 
-        elif action == "END_MATCH":
-            self.open_end_match_modal()
+    def _process_emote(self, payload):
+        actual_payload = payload.get("payload") if isinstance(payload, dict) and "payload" in payload else payload
+        if not isinstance(actual_payload, dict):
+            actual_payload = payload
 
-        elif action == "UPDATE_HP" and p_state:
-            p_state.hp = payload.get("hp", p_state.hp)
-            self.engine.notify_subscribers()
+        sender_id = actual_payload.get("player_id")
+        emote_filename = actual_payload.get("emote")
 
-        elif action == "UPDATE_POISON" and p_state:
-            p_state.poison = payload.get("poison", p_state.poison)
-            self.engine.notify_subscribers()
+        if sender_id in self.player_widgets:
+            self.player_widgets[sender_id]._animate_flying_emote(emote_filename)
 
-        elif action == "UPDATE_TAX" and p_state:
-            p_state.cmdr_tax = payload.get("tax", p_state.cmdr_tax)
-            self.engine.notify_subscribers()
-
-        elif action == "UPDATE_CMDR_DMG" and p_state:
-            p_state.cmdr_damage_received = payload.get("cmdr_damage", {})
-            self.engine.notify_subscribers()
-
-        elif action == "TOGGLE_CARD" and p_id in self.player_widgets:
-            card_name = payload.get("card_name")
-            drawn_qty = payload.get("drawn_qty")
-            self.player_widgets[p_id].sync_card_state_from_network(
-                card_name, drawn_qty
-            )
-
-    # --- OBSŁUGA OKNA END MATCH ---
+    # --- END MATCH MODAL HANDLING ---
     def open_end_match_modal(self):
         EndMatchWindow(
             parent=self,
